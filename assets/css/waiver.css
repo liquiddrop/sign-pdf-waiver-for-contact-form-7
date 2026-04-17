@@ -1,0 +1,209 @@
+/* CF7 PDF Waiver – Frontend Styles */
+
+.cf7w-waiver-wrapper {
+    max-width: 700px;
+    margin: 0 auto;
+    font-family: inherit;
+}
+
+/* ── PDF preview banner ───────────────────────────────────────────── */
+.cf7w-pdf-preview {
+    background: #f0f4ff;
+    border: 1px solid #c7d4ff;
+    border-radius: 6px;
+    padding: 12px 16px;
+    margin-bottom: 24px;
+}
+.cf7w-pdf-link {
+    text-decoration: none;
+    color: #2563eb;
+    font-weight: 600;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+}
+.cf7w-pdf-link:hover { text-decoration: underline; }
+
+/* ── Form ─────────────────────────────────────────────────────────── */
+.cf7w-form {
+    background: #fff;
+    border: 1px solid #e5e7eb;
+    border-radius: 8px;
+    padding: 28px 32px;
+}
+
+/* ── Fields ───────────────────────────────────────────────────────── */
+.cf7w-fields { display: flex; flex-direction: column; gap: 18px; margin-bottom: 28px; }
+
+.cf7w-field-group { display: flex; flex-direction: column; gap: 6px; }
+
+.cf7w-field-group label {
+    font-weight: 600;
+    font-size: 14px;
+    color: #374151;
+}
+
+.cf7w-required { color: #e02424; margin-left: 2px; }
+
+.cf7w-input,
+.cf7w-textarea {
+    width: 100%;
+    padding: 10px 14px;
+    border: 1px solid #d1d5db;
+    border-radius: 6px;
+    font-size: 15px;
+    color: #111;
+    box-sizing: border-box;
+    transition: border-color 0.15s, box-shadow 0.15s;
+    background: #fafafa;
+}
+.cf7w-input:focus,
+.cf7w-textarea:focus {
+    outline: none;
+    border-color: #2563eb;
+    box-shadow: 0 0 0 3px rgba(37,99,235,0.15);
+    background: #fff;
+}
+.cf7w-input.cf7w-error,
+.cf7w-textarea.cf7w-error {
+    border-color: #e02424;
+    box-shadow: 0 0 0 3px rgba(224,36,36,0.12);
+}
+
+.cf7w-textarea { resize: vertical; min-height: 90px; }
+
+/* Checkbox */
+.cf7w-type-checkbox .cf7w-checkbox-label {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-weight: normal;
+    cursor: pointer;
+}
+.cf7w-type-checkbox input[type="checkbox"] {
+    width: 18px; height: 18px;
+    accent-color: #2563eb;
+    flex-shrink: 0;
+}
+
+/* ── Signature pad ────────────────────────────────────────────────── */
+.cf7w-signature-section {
+    border-top: 1px solid #e5e7eb;
+    padding-top: 24px;
+    margin-bottom: 24px;
+}
+
+.cf7w-signature-label {
+    font-weight: 700;
+    font-size: 15px;
+    color: #1f2937;
+    display: block;
+    margin-bottom: 4px;
+}
+
+.cf7w-signature-hint {
+    margin: 0 0 12px;
+    font-size: 13px;
+    color: #6b7280;
+}
+
+.cf7w-canvas-wrapper {
+    border: 2px solid #d1d5db;
+    border-radius: 8px;
+    background: #fff;
+    overflow: hidden;
+    cursor: crosshair;
+    position: relative;
+}
+.cf7w-canvas-wrapper.cf7w-error { border-color: #e02424; }
+.cf7w-canvas-wrapper::after {
+    content: "Sign here";
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    font-size: 15px;
+    color: #d1d5db;
+    pointer-events: none;
+    transition: opacity 0.2s;
+}
+.cf7w-canvas-wrapper.has-signature::after { opacity: 0; }
+
+.cf7w-signature-canvas {
+    display: block;
+    width: 100%;
+    height: auto;
+    touch-action: none;
+}
+
+.cf7w-signature-actions {
+    margin-top: 10px;
+    display: flex;
+    gap: 10px;
+}
+
+.cf7w-clear-btn {
+    background: none;
+    border: 1px solid #d1d5db;
+    border-radius: 6px;
+    padding: 6px 14px;
+    font-size: 13px;
+    cursor: pointer;
+    color: #6b7280;
+    transition: border-color 0.15s, color 0.15s;
+}
+.cf7w-clear-btn:hover { border-color: #e02424; color: #e02424; }
+
+.cf7w-signature-legal {
+    font-size: 12px;
+    color: #9ca3af;
+    margin: 12px 0 0;
+    line-height: 1.5;
+}
+
+/* ── Submit button ────────────────────────────────────────────────── */
+.cf7w-submit-row { text-align: right; }
+
+.cf7w-submit-btn {
+    background: #2563eb;
+    color: #fff;
+    border: none;
+    border-radius: 8px;
+    padding: 12px 32px;
+    font-size: 16px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.15s, transform 0.1s;
+}
+.cf7w-submit-btn:hover:not(:disabled) { background: #1d4ed8; }
+.cf7w-submit-btn:active:not(:disabled) { transform: scale(0.98); }
+.cf7w-submit-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+
+/* ── Messages ─────────────────────────────────────────────────────── */
+.cf7w-messages {
+    margin-top: 16px;
+    padding: 0;
+    font-size: 14px;
+}
+.cf7w-messages.success {
+    background: #ecfdf5;
+    border: 1px solid #6ee7b7;
+    color: #065f46;
+    padding: 14px 16px;
+    border-radius: 6px;
+}
+.cf7w-messages.error {
+    background: #fef2f2;
+    border: 1px solid #fca5a5;
+    color: #991b1b;
+    padding: 14px 16px;
+    border-radius: 6px;
+}
+
+.cf7w-error { color: #b91c1c; }
+
+/* ── Responsive ───────────────────────────────────────────────────── */
+@media (max-width: 600px) {
+    .cf7w-form { padding: 18px 16px; }
+    .cf7w-submit-btn { width: 100%; }
+}

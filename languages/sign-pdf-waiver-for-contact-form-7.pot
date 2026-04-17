@@ -1,0 +1,345 @@
+# CF7 PDF Waiver — Translation Template
+# Copyright (C) 2026 Your Name
+# This file is distributed under the same license as the CF7 PDF Waiver plugin.
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: CF7 PDF Waiver 2.1.0\n"
+"Report-Msgid-Bugs-To: https://wordpress.org/support/plugin/sign-pdf-waiver-for-contact-form-7\n"
+"POT-Creation-Date: 2026-03-17 01:37+0000\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
+"Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
+"Language-Team: LANGUAGE <LL@li.org>\n"
+"Language: \n"
+"Plural-Forms: nplurals=INTEGER; plural=EXPRESSION;\n"
+"X-Generator: CF7 PDF Waiver build script\n"
+"X-Domain: sign-pdf-waiver-for-contact-form-7\n"
+
+#: class-admin.php:116
+msgid "Add CF7 fields to your Form tab and save first."
+msgstr ""
+
+#: class-admin.php:159
+msgid "Applied to newly-added boxes."
+msgstr ""
+
+#: class-admin.php:197
+msgid "Attach filled PDF to CF7's outgoing emails"
+msgstr ""
+
+#: sign-pdf-waiver-for-contact-form-7.php:123
+msgid "Background Color"
+msgstr ""
+
+#: class-admin.php:169
+msgid "Background box drawn behind each text stamp."
+msgstr ""
+
+#: sign-pdf-waiver-for-contact-form-7.php:143
+msgid "Class attribute"
+msgstr ""
+
+#: sign-pdf-waiver-for-contact-form-7.php:192
+#: class-admin.php:434
+msgid "Clear"
+msgstr ""
+
+#: class-admin.php:124
+msgid "Click a field to place it on the current PDF page."
+msgstr ""
+
+#: class-admin.php:123
+msgid "Contact Form 7 Fields"
+msgstr ""
+
+#: class-admin.php:1714
+msgid "Could not extract fields. Add rows manually."
+msgstr ""
+
+#: class-admin.php:78
+msgid "Current PDF:"
+msgstr ""
+
+#: sign-pdf-waiver-for-contact-form-7.php:260
+msgid "Custom:"
+msgstr ""
+
+#: class-admin.php:167
+msgid "Cyan"
+msgstr ""
+
+#: class-admin.php:470
+msgid "Date"
+msgstr ""
+
+#: class-admin.php:157
+msgid "Default font size (pt):"
+msgstr ""
+
+#: class-admin.php:530
+msgid "Download"
+msgstr ""
+
+#: class-admin.php:529
+msgid "Download PDF"
+msgstr ""
+
+#: class-admin.php:445
+msgid "Download Selected PDFs"
+msgstr ""
+
+#: sign-pdf-waiver-for-contact-form-7.php:349
+msgid "Download and read it here"
+msgstr ""
+
+#: class-admin.php:662
+msgid "Downloading"
+msgstr ""
+
+#: sign-pdf-waiver-for-contact-form-7.php:236
+msgid "Embeds this form's waiver PDF inline so visitors can read it before signing. The PDF is taken from the Waiver settings for this form."
+msgstr ""
+
+#: class-admin.php:183
+msgid "Example: form_{Full Name}_{date} → form_John_Smith_2024-01-15.pdf"
+msgstr ""
+
+#: sign-pdf-waiver-for-contact-form-7.php:104
+#: sign-pdf-waiver-for-contact-form-7.php:242
+msgid "Field type"
+msgstr ""
+
+#: class-admin.php:472
+msgid "Fields"
+msgstr ""
+
+#: class-admin.php:432
+msgid "Filter"
+msgstr ""
+
+#: class-admin.php:469
+msgid "Form"
+msgstr ""
+
+#: class-admin.php:28
+#: class-admin.php:29
+msgid "Form Debug"
+msgstr ""
+
+#: class-admin.php:19
+#: class-admin.php:20
+#: class-admin.php:414
+msgid "Form Submissions"
+msgstr ""
+
+#: sign-pdf-waiver-for-contact-form-7.php:255
+msgid "Full width (100%)"
+msgstr ""
+
+#: sign-pdf-waiver-for-contact-form-7.php:98
+msgid "Generate a form-tag for a canvas signature field. The drawn signature is captured as a PNG and submitted with the form."
+msgstr ""
+
+#: sign-pdf-waiver-for-contact-form-7.php:133
+#: sign-pdf-waiver-for-contact-form-7.php:247
+msgid "Height (px)"
+msgstr ""
+
+#: class-admin.php:471
+msgid "IP"
+msgstr ""
+
+#: sign-pdf-waiver-for-contact-form-7.php:138
+msgid "Id attribute"
+msgstr ""
+
+#: sign-pdf-waiver-for-contact-form-7.php:118
+msgid "Ink Color"
+msgstr ""
+
+#: sign-pdf-waiver-for-contact-form-7.php:153
+#: sign-pdf-waiver-for-contact-form-7.php:272
+msgid "Insert Tag"
+msgstr ""
+
+#: class-admin.php:1715
+msgid "Media library unavailable."
+msgstr ""
+
+#: sign-pdf-waiver-for-contact-form-7.php:113
+msgid "Name"
+msgstr ""
+
+#: class-admin.php:439
+msgid "No submissions matched."
+msgstr ""
+
+#: class-admin.php:439
+msgid "No submissions yet."
+msgstr ""
+
+#: class-admin.php:473
+msgid "PDF"
+msgstr ""
+
+#: sign-pdf-waiver-for-contact-form-7.php:225
+msgid "PDF Embed"
+msgstr ""
+
+#: sign-pdf-waiver-for-contact-form-7.php:235
+msgid "PDF Embed form-tag generator"
+msgstr ""
+
+#: class-admin.php:40
+msgid "PDF Form"
+msgstr ""
+
+#: class-admin.php:662
+msgid "PDF(s)..."
+msgstr ""
+
+#: class-admin.php:1713
+msgid "Parsing PDF…"
+msgstr ""
+
+#: class-admin.php:182
+msgid "Pattern for the saved PDF filename. Use {PDF Field Name} tokens to include field values. Built-in: {date}, {time}, {form_id}."
+msgstr ""
+
+#: class-submission-handler.php:25
+msgid "Please provide your signature."
+msgstr ""
+
+#: class-admin.php:642
+msgid "Please select PDFs to download."
+msgstr ""
+
+#: class-admin.php:83
+#: class-admin.php:1716
+msgid "Replace PDF"
+msgstr ""
+
+#: class-admin.php:422
+msgid "Search fields or IP…"
+msgstr ""
+
+#: class-admin.php:450
+#: class-admin.php:466
+msgid "Select All"
+msgstr ""
+
+#: class-admin.php:1711
+msgid "Select PDF"
+msgstr ""
+
+#: sign-pdf-waiver-for-contact-form-7.php:86
+msgid "Signature"
+msgstr ""
+
+#: sign-pdf-waiver-for-contact-form-7.php:97
+msgid "Signature form-tag generator"
+msgstr ""
+
+#: class-admin.php:74
+msgid "Step 1 – Upload PDF"
+msgstr ""
+
+#: class-admin.php:96
+msgid "Step 2 — Visual Placement"
+msgstr ""
+
+#: class-admin.php:180
+msgid "Step 3 – PDF Filename"
+msgstr ""
+
+#: class-admin.php:194
+msgid "Step 4 – Delivery"
+msgstr ""
+
+#: class-admin.php:162
+msgid "Text background:"
+msgstr ""
+
+#: sign-pdf-waiver-for-contact-form-7.php:108
+msgid "This is a required field."
+msgstr ""
+
+#: sign-pdf-waiver-for-contact-form-7.php:159
+msgid "To use the value in a mail field, insert the corresponding mail-tag (%s) in the Mail tab."
+msgstr ""
+
+#: class-admin.php:164
+msgid "Transparent"
+msgstr ""
+
+#: class-admin.php:83
+msgid "Upload PDF"
+msgstr ""
+
+#: class-admin.php:113
+msgid "Upload a PDF in Step 1 first, then save the form."
+msgstr ""
+
+#: class-admin.php:1712
+msgid "Use this PDF"
+msgstr ""
+
+#: class-admin.php:527
+msgid "View"
+msgstr ""
+
+#: class-admin.php:526
+msgid "View PDF"
+msgstr ""
+
+#: class-admin.php:201
+msgid "When checked, the completed PDF is automatically attached to every email CF7 sends for this form (admin notification and, if configured, the submitter confirmation)."
+msgstr ""
+
+#: class-admin.php:165
+msgid "White"
+msgstr ""
+
+#: sign-pdf-waiver-for-contact-form-7.php:252
+msgid "Width"
+msgstr ""
+
+#: sign-pdf-waiver-for-contact-form-7.php:128
+msgid "Width (px)"
+msgstr ""
+
+#: class-admin.php:140
+msgid "Width:"
+msgstr ""
+
+#: class-admin.php:166
+msgid "Yellow"
+msgstr ""
+
+#: sign-pdf-waiver-for-contact-form-7.php:347
+msgid "Your browser cannot display this PDF."
+msgstr ""
+
+#: sign-pdf-waiver-for-contact-form-7.php:325
+msgid "[cf7w_pdf] — no PDF configured for this form. Set one in the Waiver tab."
+msgstr ""
+
+#: sign-pdf-waiver-for-contact-form-7.php:350
+msgid "before signing."
+msgstr ""
+
+#: class-admin.php:494
+msgid "none"
+msgstr ""
+
+#: sign-pdf-waiver-for-contact-form-7.php:262
+msgid "px"
+msgstr ""
+
+#: class-admin.php:425
+msgid "— All forms —"
+msgstr ""
+
