@@ -1,15 +1,19 @@
 === Sign PDF Waiver for Contact Form 7===
+Contributors: liquiddrop
+Donate link: http://www.socialgoodanalytics.com/
 Tested up to: 6.9
 Tags: Digital Signature, Signature Field, Signature Contact Form 7, Contact Form 7, PDF Form Waiver Release Disclaimer Filling
 Stable tag: 1.0.0
 Requires PHP: 7.4
 License: GPLv2 or later
 License URI: http://www.gnu.org/licenses/gpl-3.0.html
+
+Updates Contact Form 7 with a signature field, fills out PDF's, and saves them to the website
 	
 == Description ==
 
 Updates Contact Form 7 with a canvas signature field, then takes the input fields on submit and fills out an uploaded PDF. Logs each submission's timestamp, IP address, and drawn signature to a custom database table.
-Saves and/or emails the filled out pdf. All entries are searchable based on input.
+Saves the filled out pdf. All entries are searchable based on input.
 
 **For Example**
 If a buisness or organization need people to sign a wavier/release/disclaimer they can use **Contact Form 7 PDF Waiver Signature** to collect it digitaly
@@ -44,3 +48,9 @@ You must be installed contact form 7 plugin
 4. Frontend Layout of form with signature and pdf embedded
 5. Database tracking of filled out forms
 6. Filled out PDF
+
+== External services ==
+
+This plugin uses the hardcoded Google Docs Viewer external service to embed PDFs as a fallback for browsers that can't display inline PDFs (e.g. some mobile)
+
+This service is provided by "Google": terms of use (https://policies.google.com/terms?hl=en-US), privacy policy (https://policies.google.com/privacy?hl=en-US).

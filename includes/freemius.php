@@ -10,15 +10,19 @@ if ( ! function_exists( 'cf7w_fs' ) ) {
 
         if ( ! isset( $cf7w_fs ) ) {
             // Include the Freemius SDK
-            require_once CF7W_DIR . 'vendor/freemius/start.php';
+			// Load the Freemius SDK only if it has not already been loaded
+            // by another plugin — prevents class redeclaration conflicts.
+            if ( ! class_exists( 'Freemius' ) ) {
+                require_once CF7W_DIR . 'vendor/freemius/start.php';
+            }
 
             $cf7w_fs = fs_dynamic_init( array(
                 'id'                  => '26496',
                 'slug'                => 'sign-pdf-waiver-for-contact-form-7',
                 'type'                => 'plugin',
                 'public_key'          => 'pk_fd00c71b350069bab76277bf78e16',
-                'is_premium'          => true,
-                'is_premium_only'     => true,
+                'is_premium'          => false,
+                'is_premium_only'     => false,
                 'has_addons'          => false,
                 'has_paid_plans'      => true,
                 'is_org_compliant'    => true,

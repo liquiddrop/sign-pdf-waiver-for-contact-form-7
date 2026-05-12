@@ -1,6 +1,8 @@
 <?php
 if ( ! defined( 'ABSPATH' ) ) exit;
 
+require_once CF7W_DIR . 'includes/class-premium.php';
+
 /**
  * CF7W_Submission_Handler
  *
@@ -258,6 +260,17 @@ class CF7W_Submission_Handler {
         }
         $filled_pdf = CF7W_PDF_Filler::fill( $post_id, $settings, $mappings, $pdf_data, $sig_path );
 
+        // ── Hash the filled PDF before doing anything else with it ─────────────
+        // The hash is taken here — after fill() has produced the final PDF and
+        // before anything modifies or emails it. This is the canonical hash that
+        // goes into the DB and into the verification email.
+        // Stored separately from the PDF so it arrives via a different channel
+        // (email) which makes it stronger evidence of the document state at signing.
+        $doc_hash = '';
+        if ( $filled_pdf && file_exists( $filled_pdf ) ) {
+            $doc_hash = hash( 'sha256', file_get_contents( $filled_pdf ) );
+        }
+
         // ── Log to DB ──────────────────────────────────────────────────────────
         global $wpdb;
         // Flush submissions list cache so the admin page reflects the new entry.
@@ -269,30 +282,87 @@ class CF7W_Submission_Handler {
             'form_id'    => $post_id,
             'entry_date' => current_time( 'mysql' ),
             'ip_address' => self::get_ip(),
-            // phpcs:ignore WordPress.Security.NonceVerification.Missing -- CF7 nonce verified before this hook fires
-            'user_agent' => sanitize_text_field( wp_unslash( $_SERVER['HTTP_USER_AGENT'] ?? '' ) ),
+            'user_agent' => sanitize_text_field( $_SERVER['HTTP_USER_AGENT'] ?? '' ),
             'form_data'  => wp_json_encode( $form_data ),
-            'signature'  => $sig_path,
+            'signature'  => $signature_data,
             'filled_pdf' => $filled_pdf ?: '',
-        ), array( '%d', '%s', '%s', '%s', '%s', '%s', '%s' ) );
+            'doc_hash'   => $doc_hash,
+        ), array( '%d', '%s', '%s', '%s', '%s', '%s', '%s', '%s' ) );
+        $log_id = $wpdb->insert_id;
 
-        // ── Attach filled PDF to CF7's own emails (if enabled in settings) ─────
-        if ( $filled_pdf && file_exists( $filled_pdf ) && ! empty( $settings['attach_pdf'] ) ) {
-            // CF7 >= 5.4.1: add_extra_attachments()
-            if ( method_exists( $submission, 'add_extra_attachments' ) ) {
+        // ── [PREMIUM] Attach PDF + append audit trail to CF7 email body ────────
+        if ( function_exists( 'cf7w_fs' ) && cf7w_fs()->can_use_premium_code__premium_only() ) {
+
+            // Build the audit trail text block once — reused for every mail instance
+            $audit_block = self::build_audit_block( $log_id, $doc_hash, $post_id );
+
+            // wpcf7_mail_components fires once per mail instance (mail, mail_2).
+            // We append the PDF attachment and the audit trail block in one filter.
+            // Using a closure that captures $filled_pdf, $settings, $audit_block
+            // by value so each mail instance gets the same correct data.
+			add_filter(
+				'wpcf7_mail_components',
+				function ( array $components ) use ( $filled_pdf, $settings, $audit_block ): array {
+
+					// CF7 sets use_html in $components — use it to pick the right format
+					$is_html = ! empty( $components['use_html'] );
+					$block   = $is_html
+						? ( $audit_block['html'] ?? '' )
+						: ( $audit_block['text'] ?? '' );
+
+					if ( $block !== '' ) {
+						$components['body'] = ( $components['body'] ?? '' ) . $block;
+					}
+
+					// Attach PDF if using the older CF7 path
+					if ( $filled_pdf && file_exists( $filled_pdf )
+					  && ! empty( $settings['attach_pdf'] )
+					  && ! method_exists( $GLOBALS['cf7w_submission'] ?? new stdClass, 'add_extra_attachments' ) ) {
+						$components['attachments'][] = $filled_pdf;
+					}
+
+					return $components;
+				}
+			);
+
+            // CF7 >= 5.4.1 also supports add_extra_attachments() for the attachment.
+            // We still use wpcf7_mail_components for body modification regardless of
+            // CF7 version since add_extra_attachments() only handles attachments, not body.
+            if ( $filled_pdf && file_exists( $filled_pdf )
+              && ! empty( $settings['attach_pdf'] )
+              && method_exists( $submission, 'add_extra_attachments' ) ) {
                 $submission->add_extra_attachments( $filled_pdf, 'mail' );
                 $submission->add_extra_attachments( $filled_pdf, 'mail_2' );
-            } else {
-                // Older CF7: hook wpcf7_mail_components
-                $GLOBALS['cf7w_extra_attachment'] = $filled_pdf;
-                add_filter( 'wpcf7_mail_components', function( $components ) {
-                    if ( ! empty( $GLOBALS['cf7w_extra_attachment'] ) ) {
-                        $components['attachments'][] = $GLOBALS['cf7w_extra_attachment'];
+                // When using add_extra_attachments(), remove the attachment logic
+                // from the filter above to avoid double-attaching.
+                // We do this by rebuilding the filter without the attachment part.
+                // Remove all filters added above and re-add body-only version.
+                remove_all_filters( 'wpcf7_mail_components' );
+                add_filter(
+                    'wpcf7_mail_components',
+                    function ( array $components ) use ( $audit_block ): array {
+                        if ( $audit_block !== '' ) {
+                            $components['body'] = ( $components['body'] ?? '' )
+                                . "\r\n\r\n" . $audit_block;
+                        }
+                        return $components;
                     }
-                    return $components;
-                } );
+                );
             }
-        }
+
+            // [PREMIUM] External storage
+            CF7W_Premium::handle_submission( array(
+                'log_id'          => $log_id,
+                'post_id'         => $post_id,
+                'filled_pdf'      => $filled_pdf,
+                'form_data'       => $form_data,
+                'submitter_email' => $submitter_email,
+                'settings'        => $settings,
+                'submission'      => $submission,
+                'doc_hash'        => $doc_hash,
+            ) );
+
+        } // @endif can_use_premium_code__premium_only
 
         // ── Cleanup: delete files if admin opted not to keep them ─────────────
         // Defaults to true (keep) for backwards-compatibility.
@@ -341,4 +411,93 @@ class CF7W_Submission_Handler {
         }
         return '0.0.0.0';
     }
+	
+    // ── [PREMIUM] Build audit trail text block ─────────────────────────────────
+	private static function build_audit_block(
+		int    $log_id,
+		string $doc_hash,
+		int    $post_id
+	): array {
+		if ( ! function_exists( 'cf7w_fs' )
+		  || ! cf7w_fs()->can_use_premium_code__premium_only() ) return array( 'text' => '', 'html' => '' );
+		// @ifdef can_use_premium_code__premium_only
+
+		if ( ! $doc_hash ) return array( 'text' => '', 'html' => '' );
+
+		$form_name  = get_the_title( $post_id ) ?: 'Form #' . $post_id;
+		$site_name  = get_bloginfo( 'name' );
+		$signed_at  = current_time( 'j F Y \a\t g:ia T' );
+
+		global $wpdb;
+		$verify_page_id = $wpdb->get_var(
+			"SELECT ID FROM {$wpdb->posts}
+			 WHERE post_status = 'publish'
+			 AND post_type = 'page'
+			 AND post_content LIKE '%cf7w_verify%'
+			 LIMIT 1"
+		);
+		$verify_url = $verify_page_id
+			? add_query_arg( 'log_id', $log_id, get_permalink( $verify_page_id ) )
+			: '';
+
+		// ── Plain text version ─────────────────────────────────────────────────────
+		$divider = str_repeat( '-', 60 );
+		$text  = "\n\n" . $divider . "\n";
+		$text .= "DOCUMENT RECORD\n";
+		$text .= $divider . "\n";
+		$text .= "Log ID:   {$log_id}\n";
+		$text .= "Form:     {$form_name}\n";
+		$text .= "Signed:   {$signed_at}\n";
+		$text .= "SHA-256:  {$doc_hash}\n";
+		$text .= $divider . "\n";
+		$text .= "The SHA-256 hash above uniquely identifies the signed PDF.\n";
+		if ( $verify_url ) {
+			$text .= "To verify the document has not been altered, upload it at:\n";
+			$text .= "{$verify_url}\n";
+			$text .= "Enter Log ID {$log_id} when prompted.\n";
+		} else {
+			$text .= "Contact {$site_name} and quote Log ID {$log_id} to verify.\n";
+		}
+
+		// ── HTML version ──────────────────────────────────────────────────────────
+		$html  = '<br><br>';
+		$html .= '<table style="border-collapse:collapse;font-family:monospace;font-size:13px;'
+			   . 'border:1px solid #d1d5db;border-radius:4px;width:100%;max-width:560px;">';
+		$html .= '<tr style="background:#f3f4f6;">'
+			   . '<td colspan="2" style="padding:8px 12px;font-weight:700;font-size:14px;'
+			   . 'letter-spacing:0.05em;">DOCUMENT RECORD</td></tr>';
+		$rows = array(
+			'Log ID'   => esc_html( $log_id ),
+			'Form'     => esc_html( $form_name ),
+			'Signed'   => esc_html( $signed_at ),
+			'SHA-256'  => '<span style="word-break:break-all;">' . esc_html( $doc_hash ) . '</span>',
+		);
+		$stripe = false;
+		foreach ( $rows as $label => $value ) {
+			$bg     = $stripe ? 'background:#f9fafb;' : '';
+			$html  .= '<tr style="' . $bg . '">'
+				   . '<td style="padding:6px 12px;font-weight:600;white-space:nowrap;'
+				   . 'color:#374151;vertical-align:top;">' . esc_html( $label ) . '</td>'
+				   . '<td style="padding:6px 12px;color:#111827;">' . $value . '</td>'
+				   . '</tr>';
+			$stripe = ! $stripe;
+		}
+		$html .= '<tr><td colspan="2" style="padding:8px 12px;color:#6b7280;font-size:12px;'
+			   . 'border-top:1px solid #e5e7eb;">';
+		$html .= 'The SHA-256 hash above uniquely identifies the signed PDF. ';
+		if ( $verify_url ) {
+			$html .= 'To verify the document has not been altered, '
+				   . '<a href="' . esc_url( $verify_url ) . '" style="color:#2563eb;">'
+				   . 'upload it here</a> and enter Log ID ' . (int) $log_id . '.';
+		} else {
+			$html .= 'Contact ' . esc_html( $site_name ) . ' and quote Log ID '
+				   . (int) $log_id . ' to verify.';
+		}
+		$html .= '</td></tr>';
+		$html .= '</table>';
+
+		return array( 'text' => $text, 'html' => $html );
+
+		// @endif can_use_premium_code__premium_only
+	}
 }

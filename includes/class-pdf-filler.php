@@ -150,20 +150,6 @@ class CF7W_PDF_Filler {
             copy( $src_path, $out_path );
         }
 
-		// ── Watermark unlicensed PDFs ──────────────────────────────────────────
-        // Runs AFTER fill so the stamp overlays filled content.
-        // process() always calls fill() — the watermark is the only paywall.
-        if ( file_exists( $out_path ) ) {
-            $is_licensed = class_exists( 'CF7W_License' ) && CF7W_License::is_active();
-            if ( ! $is_licensed ) {
-                $wm_pdf = self::stamp_watermark( file_get_contents( $out_path ) );
-                if ( $wm_pdf ) {
-                    file_put_contents( $out_path, $wm_pdf );
-                    error_log( 'CF7W: Watermark applied — no active license for form ' . $form_id );
-                }
-            }
-        }
-
         return file_exists( $out_path ) ? $out_path : '';
     }
 
@@ -1354,7 +1340,7 @@ endobj
                                 $sig_img_name = "CF7SigImg{$sig_img_num}";
                                 $page_content_ops[] = "q {$sig_cm} cm /{$sig_img_name} Do Q";
                                 $page_xobj_entries[ $sig_img_name ] = $sig_img_num;
-                                ( defined( 'WP_DEBUG' ) && WP_DEBUG ) && error_log("CF7W: stamped sig image at x={$sx} y={$sy} w={$sw_pts} h={$sh_pts}");
+                                ( defined( 'WP_DEBUG' ) && WP_DEBUG ) && error_log("CF7W: stamped sig image at x={$sx} y={$sy}");
                             }
                         }
                     }
@@ -2552,194 +2538,148 @@ endobj
         return '';
     }
 	
-public static function stamp_watermark( string $pdf ): string {
+    // ── AUDIT TRAIL PAGE ──────────────────────────────────────────────────────
+    // Appends a new page containing audit trail text to the PDF.
+    // Called by CF7W_Premium::append_audit_trail() after the PDF is filled.
+    // Uses apply_incremental() so it never rewrites existing objects.
+    // --
+	public static function append_audit_page( string $pdf, array $lines ): string {
 
-    $index   = self::build_obj_index( $pdf );
-    $updates = array();
-    $max_obj = $index ? max( array_keys( $index ) ) : 1;
+		$index   = self::build_obj_index( $pdf );
+		$updates = array();
+		$max_obj = $index ? max( array_keys( $index ) ) : 1;
 
-    // Collect all leaf /Page objects from the current index.
-    // Because $pdf is read from the already-written output file AFTER
-    // stamp_signature and stamp_visual_placements have run, the page bodies
-    // here already contain all previous /Contents and /XObject additions.
-    $page_objs = array();
-    foreach ( $index as $n => $info ) {
-        $body = self::get_obj_body( $pdf, $info );
-        if ( $body === null ) continue;
-        if ( ! preg_match( '/\/Type\s*\/Page\b/', $body ) ) continue;
-        if (   preg_match( '/\/Type\s*\/Pages\b/', $body ) ) continue;
-        $page_objs[] = array( 'num' => $n, 'body' => $body );
-    }
+		// Find the /Pages root node
+		$pages_num  = null;
+		$pages_body = null;
+		foreach ( $index as $n => $info ) {
+			$body = self::get_obj_body( $pdf, $info );
+			if ( $body && preg_match( '/\/Type\s*\/Pages\b/', $body ) ) {
+				$pages_num  = $n;
+				$pages_body = $body;
+				break;
+			}
+		}
+		if ( $pages_num === null ) {
+			error_log( 'CF7W append_audit_page: /Pages root not found' );
+			return $pdf;
+		}
 
-    if ( empty( $page_objs ) ) return $pdf;
+		$page_w   = 612.0;
+		$page_h   = 792.0;
+		$margin_x = 50.0;
+		$y        = 720.0;
+		$line_h   = 15.0;
+		$head_h   = 26.0;
 
-    // Single shared ExtGState for 30% opacity
-    $max_obj++;
-    $gs_num = $max_obj;
-    $updates[ $gs_num ] = "{$gs_num} 0 obj\n"
-        . "<</Type /ExtGState /ca 0.30 /CA 0.30>>\n"
-        . "endobj\n";
+		// Build content stream using only ASCII-safe characters.
+		// PDF WinAnsiEncoding cannot represent multi-byte UTF-8 characters —
+		// use plain ASCII hyphens for divider lines, never Unicode box-drawing.
+		$cs_ops = "BT\n";
 
-    foreach ( $page_objs as $pg ) {
-        $page_num  = $pg['num'];
-        $page_body = $pg['body'];
+		foreach ( $lines as $i => $line ) {
+			// Sanitise to printable ASCII only — strip anything outside 0x20-0x7E
+			// which WinAnsiEncoding cannot represent reliably across all viewers.
+			$ascii = preg_replace( '/[^\x20-\x7E]/', '', $line );
 
-        // Page dimensions
-        $pw = 612.0; $ph = 792.0;
-        if ( preg_match(
-            '/\/MediaBox\s*\[\s*[\d.+-]+\s+[\d.+-]+\s+([\d.+-]+)\s+([\d.+-]+)\s*\]/',
-            $page_body, $mb
-        ) ) {
-            $pw = floatval( $mb[1] );
-            $ph = floatval( $mb[2] );
-        }
+			// Escape PDF literal string special characters
+			$safe = str_replace(
+				array( '\\', '(', ')' ),
+				array( '\\\\', '\\(', '\\)' ),
+				$ascii
+			);
 
-        $cx = round( $pw / 2, 4 );
-        $cy = round( $ph / 2, 4 );
-        $cos = 0.7071; $sin = 0.7071;
-        $fs = 104; $x_offset = -114;
+			if ( $i === 0 ) {
+				// Heading — 13pt bold
+				$cs_ops .= "/CF7AuditBold 13 Tf\n";
+				$cs_ops .= "1 0 0 1 {$margin_x} {$y} Tm\n";
+				$cs_ops .= "({$safe}) Tj\n";
+				$y -= $head_h;
 
-        // Form XObject with self-contained resources
-        $font_inline = '<</Type /Font /Subtype /Type1'
-            . ' /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding>>';
+			} elseif ( strlen( $ascii ) > 0 && str_repeat( $ascii[0], strlen( $ascii ) ) === $ascii ) {
+				// Divider — a line of repeated identical characters (e.g. all hyphens).
+				// Draw as a grey rectangle instead of text for a cleaner look.
+				$cs_ops .= "ET\n";
+				$rule_y   = round( $y + 5, 2 );
+				$rule_w   = round( $page_w - $margin_x * 2, 2 );
+				$cs_ops  .= "0.75 0.75 0.75 rg\n";
+				$cs_ops  .= "{$margin_x} {$rule_y} {$rule_w} 0.75 re f\n";
+				$cs_ops  .= "0 0 0 rg\n";
+				$cs_ops  .= "BT\n/CF7AuditFont 10 Tf\n";
+				$y       -= $line_h;
 
-        $xobj_ops = "/CF7WMAlpha gs\n"
-            . "0.70 0.70 0.70 rg\n"
-            . "BT\n"
-            . "/CF7WMFont {$fs} Tf\n"
-            . "{$cos} {$sin} -{$sin} {$cos} {$cx} {$cy} Tm\n"
-            . "{$x_offset} 0 Td\n"
-            . "(DEMO) Tj\n"
-            . "ET\n";
+			} else {
+				// Body line — 10pt regular
+				$cs_ops .= "/CF7AuditFont 10 Tf\n";
+				$cs_ops .= "1 0 0 1 {$margin_x} {$y} Tm\n";
+				$cs_ops .= "({$safe}) Tj\n";
+				$y -= $line_h;
+			}
+		}
 
-        $xobj_dict = "<</Type /XObject /Subtype /Form"
-            . " /BBox [0 0 {$pw} {$ph}]"
-            . " /Matrix [1 0 0 1 0 0]"
-            . " /Resources<<"
-                . "/Font<</CF7WMFont {$font_inline}>>"
-                . "/ExtGState<</CF7WMAlpha {$gs_num} 0 R>>"
-            . ">>"
-            . " /Length " . strlen( $xobj_ops )
-            . ">>";
+		$cs_ops .= "ET\n";
 
-        $max_obj++;
-        $xobj_num = $max_obj;
-        $updates[ $xobj_num ] = "{$xobj_num} 0 obj\n"
-            . "{$xobj_dict}\n"
-            . "stream\n{$xobj_ops}endstream\nendobj\n";
+		// Content stream object
+		$max_obj++;
+		$cs_num = $max_obj;
+		$updates[ $cs_num ] = "{$cs_num} 0 obj\n"
+			. "<</Length " . strlen( $cs_ops ) . ">>\n"
+			. "stream\n{$cs_ops}endstream\nendobj\n";
 
-        // Minimal content stream that invokes the Form XObject
-        $cs_ops = "q\n/CF7WMStamp Do\nQ\n";
-        $max_obj++;
-        $cs_num = $max_obj;
-        $updates[ $cs_num ] = "{$cs_num} 0 obj\n"
-            . "<</Length " . strlen( $cs_ops ) . ">>\n"
-            . "stream\n{$cs_ops}endstream\nendobj\n";
+		// Font objects — regular and bold, both self-contained
+		$font_regular = '<</Type /Font /Subtype /Type1'
+			. ' /BaseFont /Helvetica /Encoding /WinAnsiEncoding>>';
+		$font_bold    = '<</Type /Font /Subtype /Type1'
+			. ' /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding>>';
 
-        // ── Extend /Contents ───────────────────────────────────────────────────
-        if ( preg_match( '/\/Contents\s*\[([^\]]*)\]/', $page_body, $cm ) ) {
-            $page_body = str_replace(
-                $cm[0],
-                '/Contents [' . trim( $cm[1] ) . ' ' . $cs_num . ' 0 R]',
-                $page_body
-            );
-        } elseif ( preg_match( '/\/Contents\s+(\d+\s+\d+\s+R)/', $page_body, $cm ) ) {
-            $page_body = str_replace(
-                $cm[0],
-                '/Contents [' . $cm[1] . ' ' . $cs_num . ' 0 R]',
-                $page_body
-            );
-        } else {
-            $page_body = self::inject_before_end(
-                $page_body,
-                '/Contents [' . $cs_num . ' 0 R]'
-            );
-        }
+		// New page object with both fonts in its resource dict
+		$max_obj++;
+		$page_num = $max_obj;
+		$updates[ $page_num ] = "{$page_num} 0 obj\n"
+			. "<</Type /Page"
+			. " /Parent {$pages_num} 0 R"
+			. " /MediaBox [0 0 {$page_w} {$page_h}]"
+			. " /Contents {$cs_num} 0 R"
+			. " /Resources<<"
+				. "/Font<<"
+					. "/CF7AuditFont {$font_regular}"
+					. "/CF7AuditBold {$font_bold}"
+				. ">>"
+			. ">>"
+			. ">>\n"
+			. "endobj\n";
 
-        // ── Register /CF7WMStamp XObject ───────────────────────────────────────
-        //
-        // This mirrors stamp_signature() exactly (lines 2066-2112):
-        //
-        //   1. If /Resources is an INDIRECT reference (/Resources N 0 R):
-        //      - Read the resource object body from $pdf using $index
-        //      - If /XObject inside it is also indirect: patch that XObject
-        //        object directly and add to $updates
-        //      - Otherwise: use inject_xobject() on the resource body and
-        //        write the patched resource object to $updates
-        //      - Page body is NOT modified for resources (ref stays intact)
-        //
-        //   2. If /Resources is INLINE (/Resources<<...>>):
-        //      - Use inject_xobject() on page_body directly
-        //      - Page body is modified in place
-        //
-        //   3. If no /Resources at all:
-        //      - Use inject_xobject() on page_body
-        //
-        // inject_xobject() is only called on the RESOURCE DICT BODY or on
-        // the page body when resources are inline. It is never called on a
-        // page body that contains an indirect /Resources reference, because
-        // inject_xobject() cannot follow indirect references.
+		// Update /Pages: increment /Count, append new page to /Kids
+		$new_pages_body = $pages_body;
 
-        $xobj_entry  = '/CF7WMStamp ' . $xobj_num . ' 0 R';
-        $xobj_placed = false;
-        $res_body    = null;
-        $res_obj_num = null;
+		if ( preg_match( '/\/Count\s+(\d+)/', $new_pages_body, $cm ) ) {
+			$new_count      = (int) $cm[1] + 1;
+			$new_pages_body = str_replace( $cm[0], '/Count ' . $new_count, $new_pages_body );
+		} else {
+			$new_pages_body = self::inject_before_end( $new_pages_body, '/Count 1' );
+		}
 
-        // Step 1: resolve /Resources
-        if ( preg_match( '/\/Resources\s+(\d+)\s+0\s+R/', $page_body, $rr ) ) {
-            // Indirect /Resources — read the resource object
-            $res_obj_num = (int) $rr[1];
-            if ( isset( $index[ $res_obj_num ] ) ) {
-                $res_body = self::get_obj_body( $pdf, $index[ $res_obj_num ] );
-            }
-        } elseif ( preg_match( '/\/Resources\s*<</', $page_body ) ) {
-            // Inline /Resources — treat page body as the resource container
-            $res_body    = $page_body;
-            $res_obj_num = null; // null signals: write back into page_body
-        }
+		if ( preg_match( '/\/Kids\s*\[([^\]]*)\]/', $new_pages_body, $km ) ) {
+			$new_pages_body = str_replace(
+				$km[0],
+				'/Kids [' . trim( $km[1] ) . ' ' . $page_num . ' 0 R]',
+				$new_pages_body
+			);
+		} else {
+			$new_pages_body = self::inject_before_end(
+				$new_pages_body,
+				'/Kids [' . $page_num . ' 0 R]'
+			);
+		}
 
-        if ( $res_body !== null ) {
-            // Step 2: check if /XObject inside the resource dict is indirect
-            if ( preg_match( '#/XObject\s+(\d+)\s+0\s+R#', $res_body, $xr ) ) {
-                $xobj_dict_num = (int) $xr[1];
-                if ( isset( $index[ $xobj_dict_num ] ) ) {
-                    $xobj_body = self::get_obj_body( $pdf, $index[ $xobj_dict_num ] );
-                    if ( $xobj_body !== null ) {
-                        // Patch the XObject dict object directly
-                        $new_xobj_body = self::inject_before_end( $xobj_body, $xobj_entry );
-                        $updates[ $xobj_dict_num ] = "{$xobj_dict_num} 0 obj\n"
-                            . trim( $new_xobj_body ) . "\nendobj\n";
-                        $xobj_placed = true;
-                    }
-                }
-            }
+		$updates[ $pages_num ] = "{$pages_num} 0 obj\n"
+			. trim( $new_pages_body ) . "\nendobj\n";
 
-            if ( ! $xobj_placed ) {
-                // /XObject is inline in the resource dict, or indirect but unreadable.
-                // inject_xobject() operates on the resource body string — this is correct
-                // because res_body IS the resource dict, not the page body.
-                $new_res_body = self::inject_xobject( $res_body, $xobj_entry );
-                if ( $res_obj_num !== null ) {
-                    // Indirect resource — write patched resource object to updates
-                    $updates[ $res_obj_num ] = "{$res_obj_num} 0 obj\n"
-                        . trim( $new_res_body ) . "\nendobj\n";
-                } else {
-                    // Inline resource — update page_body in place
-                    $page_body = $new_res_body;
-                }
-                $xobj_placed = true;
-            }
-        }
+		error_log( 'CF7W append_audit_page: page=' . $page_num
+			. ' cs=' . $cs_num
+			. ' pages_obj=' . $pages_num
+			. ' lines=' . count( $lines ) );
 
-        if ( ! $xobj_placed ) {
-            // No /Resources at all — inject into page body
-            $page_body = self::inject_xobject( $page_body, $xobj_entry );
-        }
-
-        $updates[ $page_num ] = "{$page_num} 0 obj\n"
-            . trim( $page_body ) . "\nendobj\n";
-    }
-
-    return self::apply_incremental( $pdf, $updates );
-}
+		return self::apply_incremental( $pdf, $updates );
+	}
 }
