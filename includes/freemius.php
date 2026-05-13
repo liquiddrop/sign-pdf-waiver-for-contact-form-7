@@ -17,12 +17,14 @@ if ( ! function_exists( 'cf7w_fs' ) ) {
             }
 
             $cf7w_fs = fs_dynamic_init( array(
-                'id'                  => '26496',
-                'slug'                => 'sign-pdf-waiver-for-contact-form-7',
+                'id'                  => '29556',
+                'slug'                => 'pdf-waiver-signer-for-contact-form-7',
                 'type'                => 'plugin',
-                'public_key'          => 'pk_fd00c71b350069bab76277bf78e16',
-                'is_premium'          => false,
-                'is_premium_only'     => false,
+                'public_key'          => 'pk_5790b79dc2ec6fa4904dd8e7a3e16',
+                'is_premium'          => true,
+                'premium_suffix'      => 'Premium Plan',
+                // If your plugin is a serviceware, set this option to false.
+                'has_premium_version' => true,
                 'has_addons'          => false,
                 'has_paid_plans'      => true,
                 'is_org_compliant'    => true,
@@ -30,7 +32,7 @@ if ( ! function_exists( 'cf7w_fs' ) ) {
                 // auto-generated free version, delete this line before uploading to wp.org.
                 'wp_org_gatekeeper'   => 'OA7#BoRiBNqdf52FvzEf!!074aRLPs8fspif$7K1#4u4Csys1fQlCecVcUTOs2mcpeVHi#C2j9d09fOTvbC0HloPT7fFee5WdS3G',
                 'trial'               => array(
-                    'days'               => 14,
+                    'days'               => 7,
                     'is_require_payment' => false,
                 ),
                 'menu'                => array(
@@ -46,9 +48,13 @@ if ( ! function_exists( 'cf7w_fs' ) ) {
 
     // Initialize Freemius immediately
     cf7w_fs();
+	// Signal that SDK was initiated.
+    do_action( 'cf7w_fs_loaded' );
 
     // Register the after-uninstall hook
     cf7w_fs()->add_action( 'after_uninstall', 'cf7w_fs_uninstall_cleanup' );
+} else {
+	cf7w_fs()->set_basename( true, CF7W_DIR );
 }
 
 /**
