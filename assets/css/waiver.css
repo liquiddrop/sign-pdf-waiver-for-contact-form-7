@@ -161,6 +161,20 @@
     line-height: 1.5;
 }
 
+/* ── E-sign consent ───────────────────────────────────────────────────────── */
+.cf7w-consent-wrap {
+    max-width: 100%;
+}
+
+.cf7w-consent-label {
+    color: #374151;
+}
+
+.cf7w-consent-label input[type="checkbox"]:focus {
+    outline: 2px solid #2563eb;
+    outline-offset: 2px;
+}
+
 /* ── Submit button ────────────────────────────────────────────────── */
 .cf7w-submit-row { text-align: right; }
 

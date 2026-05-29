@@ -66,6 +66,23 @@
 .cf7w-sub-table tr:last-child td { border-bottom: none; }
 .cf7w-sub-table tbody tr:hover td { background: #f9fafb; }
 
+/* ── Submissions table delete button ─────────────────────────────────────── */
+.cf7w-delete-btn {
+    background: none;
+    transition: background-color 0.15s, color 0.15s;
+}
+.cf7w-delete-btn:hover {
+    background: #b32d2e !important;
+    color: #fff !important;
+    border-color: #b32d2e !important;
+}
+
+/* Certificate column */
+.cf7w-sub-table .col-cert    { width: 90px; text-align: center; }
+
+/* Actions column — holds the delete button, always visible */
+.cf7w-sub-table .col-actions { width: 80px; text-align: center; vertical-align: middle; }
+
 /* column widths */
 .cf7w-sub-table .col-checkbox { width: 30px; text-align: center; }
 .cf7w-sub-table .col-id   { width: 50px; white-space: nowrap; }

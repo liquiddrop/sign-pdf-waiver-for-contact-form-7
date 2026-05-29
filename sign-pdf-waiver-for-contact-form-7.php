@@ -3,8 +3,8 @@
  * Plugin Name: Sign PDF Waiver for Contact Form 7
  * Plugin URI:  https://wordpress.org/plugins/sign-pdf-waiver-for-contact-form-7/
  * Description: Attach a PDF waiver to CF7. Map fields, capture signature, fill and email the PDF.
- * Version:     1.0.1
- * Requires at least: 5.0
+ * Version:     1.0.3
+ * Requires at least: 6.2
  * Requires PHP: 7.4
  * Requires Plugins: contact-form-7
  * Author:      Social Good Analytics LLC
@@ -15,17 +15,17 @@
 
 if ( ! defined( 'ABSPATH' ) ) exit;
 
-define( 'CF7W_VERSION', '1.0.0' );
+define( 'CF7W_VERSION', '1.0.3' );
 define( 'CF7W_DIR',     plugin_dir_path( __FILE__ ) );
 define( 'CF7W_URL',     plugin_dir_url( __FILE__ ) );
-define( 'CF7W_DB_VERSION', '1.1' ); // increment this only when schema changes
+define( 'CF7W_DB_VERSION', '1.2' ); // increment this only when schema changes
 
 /**
  * Secure (non-web-accessible) storage for filled PDFs and signatures.
  * Stored under wp-content/uploads/sign-pdf-waiver-for-contact-form-7/ — no public URL exists for this path.
  * Files are served only through the authenticated cf7w_serve_file proxy.
  */
-define( 'CF7W_SECURE_DIR', WP_CONTENT_DIR . '/uploads/sign-pdf-waiver-for-contact-form-7/' );
+define( 'CF7W_SECURE_DIR', wp_upload_dir()['basedir'] . '/sign-pdf-waiver-for-contact-form-7' );
 
 // CF7W_DB_TABLE cannot be defined at file-load time because $wpdb may not be
 // initialised yet (causes fatal during activation). Use a helper function instead.
@@ -36,10 +36,10 @@ function cf7w_db_table(): string {
 
 // ── Freemius SDK ──────────────────────────────────────────────────────────────
 // Must be loaded FIRST — before class files that reference cf7w_fs()
-if ( function_exists( 'cf7w_fs' ) && cf7w_fs()->can_use_premium_code__premium_only() ) {
-    require_once CF7W_DIR . 'includes/class-premium.php';
-} // @endif can_use_premium_code__premium_only
 require_once CF7W_DIR . 'includes/freemius.php';
+if ( cf7w_fs()->can_use_premium_code__premium_only() ) {
+    require_once CF7W_DIR . 'includes/class-premium__premium_only.php';
+} // @endif can_use_premium_code__premium_only
 require_once CF7W_DIR . 'includes/class-license.php';
 require_once CF7W_DIR . 'includes/class-pdf-parser.php';
 require_once CF7W_DIR . 'includes/class-pdf-filler.php';
@@ -79,6 +79,12 @@ function cf7w_run_dbdelta(): void {
     } else {
         error_log( 'CF7W: doc_hash column already exists in ' . $table );
     }
+	
+	// Add cert_pdf column if missing
+    $col2 = $wpdb->get_results( "SHOW COLUMNS FROM {$table} LIKE 'cert_pdf'" );
+    if ( empty( $col2 ) ) {
+        $wpdb->query( "ALTER TABLE {$table} ADD COLUMN cert_pdf TEXT NOT NULL DEFAULT ''" );
+    }
 
     // Keep dbDelta for fresh installs only
     $charset_collate = $wpdb->get_charset_collate();
@@ -92,6 +98,7 @@ function cf7w_run_dbdelta(): void {
         signature   LONGTEXT,
         filled_pdf  TEXT,
         doc_hash    VARCHAR(64) NOT NULL DEFAULT '',
+		cert_pdf    TEXT NOT NULL DEFAULT '',
         PRIMARY KEY (id),
         KEY form_id (form_id)
     ) $charset_collate;";
@@ -111,19 +118,26 @@ function cf7w_boot() {
         cf7w_run_dbdelta();
         update_option( 'cf7w_db_version', CF7W_DB_VERSION );
     }
-	error_log( 'CF7W license state: paying=' . (int)cf7w_fs()->is_paying()
-    . ' trial=' . (int)cf7w_fs()->is_trial()
-    . ' registered=' . (int)cf7w_fs()->is_registered() );
     cf7w_ensure_secure_dir();
     CF7W_Admin::init();
     CF7W_Submission_Handler::init();
 	
-	// Verification shortcode — front-end only, no CF7 dependency
-    add_shortcode( 'cf7w_verify', 'cf7w_verify_shortcode' );
+	add_filter( 'wpcf7_form_hidden_fields', 'cf7w_add_submission_nonce' );
+	
+	if ( cf7w_fs()->can_use_premium_code__premium_only() ) {
+      	// Verification shortcode — front-end only, no CF7 dependency
+		add_shortcode( 'cf7w_verify', 'cf7w_verify_shortcode' );
 
-    // AJAX handlers for the verification form
-    add_action( 'wp_ajax_cf7w_verify_document',        'cf7w_ajax_verify_document' );
-    add_action( 'wp_ajax_nopriv_cf7w_verify_document', 'cf7w_ajax_verify_document' );
+		// AJAX handlers for the verification form
+		add_action( 'wp_ajax_cf7w_verify_document',        'cf7w_ajax_verify_document' );
+		add_action( 'wp_ajax_nopriv_cf7w_verify_document', 'cf7w_ajax_verify_document' );
+    } // @endif can_use_premium_code__premium_only
+}
+
+
+function cf7w_add_submission_nonce( array $fields ): array {
+	$fields['cf7w_submission_nonce'] = wp_create_nonce( 'cf7w_submission' );
+	return $fields;
 }
 
 /**
@@ -131,26 +145,38 @@ function cf7w_boot() {
  * Called on activation and on every boot so the folder is always present.
  */
 function cf7w_ensure_secure_dir(): void {
-    $dirs = array(
+$dirs = array(
         CF7W_SECURE_DIR,
         CF7W_SECURE_DIR . 'filled/',
         CF7W_SECURE_DIR . 'signatures/',
         CF7W_SECURE_DIR . 'debug/',
+        CF7W_SECURE_DIR . 'certificates/',   // add this if using Issue 1 fix
     );
     foreach ( $dirs as $dir ) {
         if ( ! is_dir( $dir ) ) wp_mkdir_p( $dir );
     }
+
+    // Bootstrap WP_Filesystem
+    global $wp_filesystem;
+    if ( empty( $wp_filesystem ) ) {
+        require_once ABSPATH . 'wp-admin/includes/file.php';
+        WP_Filesystem();
+    }
+
     $htaccess = CF7W_SECURE_DIR . '.htaccess';
-    if ( ! file_exists( $htaccess ) ) {
-        file_put_contents( $htaccess,
+    if ( ! $wp_filesystem->exists( $htaccess ) ) {
+        $wp_filesystem->put_contents(
+            $htaccess,
             "# CF7 Waiver - deny all direct HTTP access\n" .
             "<IfModule mod_authz_core.c>\n    Require all denied\n</IfModule>\n" .
-            "<IfModule !mod_authz_core.c>\n    Order deny,allow\n    Deny from all\n</IfModule>\n"
+            "<IfModule !mod_authz_core.c>\n    Order deny,allow\n    Deny from all\n</IfModule>\n",
+            FS_CHMOD_FILE
         );
     }
+
     $index = CF7W_SECURE_DIR . 'index.php';
-    if ( ! file_exists( $index ) ) {
-        file_put_contents( $index, '<?php // Silence is golden.' );
+    if ( ! $wp_filesystem->exists( $index ) ) {
+        $wp_filesystem->put_contents( $index, '<?php // Silence is golden.', FS_CHMOD_FILE );
     }
 }
 
@@ -264,6 +290,26 @@ function cf7w_tag_generator_panel( $contact_form, $args = '' ) {
             <legend><?php esc_html_e( 'Height (px)', 'sign-pdf-waiver-for-contact-form-7' ); ?></legend>
             <input type="number" data-tag-part="option" data-tag-option="height:" value="160" min="40" max="800" class="oneline">
         </fieldset>
+		
+		<fieldset>
+            <legend><?php esc_html_e( 'E-Sign Consent', 'sign-pdf-waiver-for-contact-form-7' ); ?></legend>
+            <label>
+                <input type="checkbox" data-tag-part="option"
+                       data-tag-option="consent:" value="1">
+                <?php esc_html_e( 'Show "I agree to sign electronically" checkbox', 'sign-pdf-waiver-for-contact-form-7' ); ?>
+            </label>
+            <div style="margin-top:6px;">
+                <label style="display:block;font-size:12px;margin-bottom:3px;">
+                    <?php esc_html_e( 'Consent label text (optional):', 'sign-pdf-waiver-for-contact-form-7' ); ?>
+                </label>
+                <input type="text"
+                       data-tag-part="option"
+                       data-tag-option="consent_label:"
+                       class="oneline"
+                       placeholder="<?php esc_attr_e( 'I agree to sign this document electronically.', 'sign-pdf-waiver-for-contact-form-7' ); ?>"
+                       style="width:100%;">
+            </div>
+        </fieldset>
 
         <fieldset>
             <legend><?php esc_html_e( 'Id attribute', 'sign-pdf-waiver-for-contact-form-7' ); ?></legend>
@@ -315,6 +361,15 @@ function cf7w_signature_tag_handler( $tag ) {
     $width     = max( 100, (int) ( $tag->get_option( 'width',  '', true ) ?: 400 ) );
     $height    = max( 40,  (int) ( $tag->get_option( 'height', '', true ) ?: 160 ) );
 
+    // Consent checkbox options
+    $show_consent   = (bool) $tag->get_option( 'consent', '', true );
+    $consent_label  = $tag->get_option( 'consent_label', '', true );
+    if ( ! $consent_label ) {
+        $consent_label = __( 'I agree to sign this document electronically.', 'sign-pdf-waiver-for-contact-form-7' );
+    }
+    $consent_name  = 'cf7w_consent_' . $name;
+    $consent_error = $show_consent ? wpcf7_get_validation_error( $consent_name ) : '';
+
     $atts  = 'type="hidden" ';
     $atts .= 'id="cf7w-input-' . $name . '" ';
     $atts .= 'name="' . $name . '" ';
@@ -323,10 +378,42 @@ function cf7w_signature_tag_handler( $tag ) {
     if ( $required ) $atts .= 'data-required="1" ';
 
     $html  = '<div class="cf7w-sig-wrap">';
-    $html .= '<div class="cf7w-canvas-container" style="border:1px solid #ccc;background:' . $bg_color . ';display:inline-block;border-radius:4px;">';
-    $html .= '<canvas id="cf7w-canvas-' . $name . '" class="cf7w-canvas" data-field="' . $name . '" width="' . $width . '" height="' . $height . '" style="display:block;cursor:crosshair;touch-action:none;max-width:100%;"></canvas>';
+
+    // Consent checkbox — rendered ABOVE the canvas
+    if ( $show_consent ) {
+        $html .= '<div class="cf7w-consent-wrap" style="margin-bottom:10px;">';
+        $html .= '<label class="cf7w-consent-label" style="display:flex;align-items:flex-start;'
+               . 'gap:8px;font-size:13px;line-height:1.5;cursor:pointer;">';
+        $html .= '<span class="wpcf7-form-control-wrap" data-name="' . esc_attr( $consent_name ) . '" '
+               . 'style="flex-shrink:0;margin-top:2px;">';
+        $html .= '<input type="checkbox" '
+               . 'id="cf7w-consent-' . $name . '" '
+               . 'name="' . esc_attr( $consent_name ) . '" '
+               . 'value="1" '
+               . 'class="cf7w-consent-checkbox" '
+               . 'data-sig-field="' . $name . '" '
+               . 'style="width:16px;height:16px;accent-color:#2563eb;cursor:pointer;">';
+        $html .= $consent_error;
+        $html .= '</span>';
+        $html .= '<span>' . esc_html( $consent_label ) . '</span>';
+        $html .= '</label>';
+        $html .= '</div>';
+    }
+
+    // Signature canvas
+    $html .= '<div class="cf7w-canvas-container" style="border:1px solid #ccc;background:'
+           . $bg_color . ';display:inline-block;border-radius:4px;">';
+    $html .= '<canvas id="cf7w-canvas-' . $name . '" '
+           . 'class="cf7w-canvas" '
+           . 'data-field="' . $name . '" '
+           . 'width="' . $width . '" '
+           . 'height="' . $height . '" '
+           . 'style="display:block;cursor:crosshair;touch-action:none;max-width:100%;"></canvas>';
     $html .= '</div>';
-    $html .= '<br><button type="button" class="cf7w-clear" data-field="' . $name . '" style="margin-top:6px;font-size:12px;">' . esc_html__( 'Clear', 'sign-pdf-waiver-for-contact-form-7' ) . '</button>';
+    $html .= '<br><button type="button" class="cf7w-clear" data-field="' . $name . '" '
+           . 'style="margin-top:6px;font-size:12px;">'
+           . esc_html__( 'Clear', 'sign-pdf-waiver-for-contact-form-7' )
+           . '</button>';
     $html .= '<span class="wpcf7-form-control-wrap" data-name="' . $name . '">';
     $html .= '<input ' . $atts . '>';
     $html .= $error;
@@ -480,6 +567,7 @@ function cf7w_pdf_tag_handler( $tag ) {
     return $html;
 }
 
+if ( cf7w_fs()->can_use_premium_code__premium_only() ) {
 // ════════════════════════════════════════════════════════════════════════════
 // [cf7w_verify] shortcode — front-end document verification page
 // Usage: add [cf7w_verify] to any WordPress page
@@ -491,14 +579,14 @@ function cf7w_verify_shortcode(): string {
     <div class="cf7w-verify-wrap" style="max-width:560px;margin:0 auto;font-family:inherit;">
 
         <h2 style="font-size:1.4em;margin-bottom:8px;">
-            <?php esc_html_e( 'Verify a Signed Document', 'cf7-waiver' ); ?>
+            <?php esc_html_e( 'Verify a Signed Document', 'sign-pdf-waiver-for-contact-form-7' ); ?>
         </h2>
         <p style="color:#555;margin-bottom:20px;font-size:14px;">
 			<?php esc_html_e(
-				'Enter the Log ID and upload the PDF exactly as you received it '
-				. '— do not modify the file. The hash will be compared against '
+				'Enter the Log ID and upload the PDF exactly as you received it, '
+				. ' do not modify the file. The pdf will be compared against '
 				. 'our records to confirm the document has not been altered since signing.',
-				'cf7-waiver'
+				'sign-pdf-waiver-for-contact-form-7'
 			); ?>
 		</p>
 
@@ -507,34 +595,27 @@ function cf7w_verify_shortcode(): string {
             <div style="margin-bottom:14px;">
                 <label for="cf7w-log-id"
                        style="display:block;font-weight:600;font-size:14px;margin-bottom:4px;">
-                    <?php esc_html_e( 'Log ID', 'cf7-waiver' ); ?>
+                    <?php esc_html_e( 'Log ID', 'sign-pdf-waiver-for-contact-form-7' ); ?>
                 </label>
                 <input type="number" id="cf7w-log-id" min="1"
                        style="width:100%;padding:9px 12px;border:1px solid #d1d5db;
                               border-radius:5px;font-size:15px;box-sizing:border-box;"
-                       placeholder="<?php esc_attr_e( 'e.g. 42', 'cf7-waiver' ); ?>">
+                       placeholder="<?php esc_attr_e( 'e.g. 42', 'sign-pdf-waiver-for-contact-form-7' ); ?>">
             </div>
 
             <div style="margin-bottom:14px;">
                 <label for="cf7w-verify-file"
                        style="display:block;font-weight:600;font-size:14px;margin-bottom:4px;">
-                    <?php esc_html_e( 'PDF File (without audit trail page)', 'cf7-waiver' ); ?>
+                    <?php esc_html_e( 'Signed PDF File', 'sign-pdf-waiver-for-contact-form-7' ); ?>
                 </label>
                 <input type="file" id="cf7w-verify-file" accept=".pdf,application/pdf"
                        style="width:100%;padding:9px 0;font-size:14px;">
-                <p style="margin:4px 0 0;font-size:12px;color:#6b7280;">
-                    <?php esc_html_e(
-                        'Remove the last page (the audit trail) from your PDF before uploading. '
-                        . 'Most PDF viewers let you delete pages via Print → Save as PDF.',
-                        'cf7-waiver'
-                    ); ?>
-                </p>
             </div>
 
             <button type="button" id="cf7w-verify-btn"
                     style="background:#2563eb;color:#fff;border:none;border-radius:6px;
                            padding:11px 28px;font-size:15px;font-weight:600;cursor:pointer;">
-                <?php esc_html_e( 'Verify Document', 'cf7-waiver' ); ?>
+                <?php esc_html_e( 'Verify Document', 'sign-pdf-waiver-for-contact-form-7' ); ?>
             </button>
 
         </div><!-- #cf7w-verify-form -->
@@ -565,20 +646,20 @@ function cf7w_verify_shortcode(): string {
             var file  = document.getElementById('cf7w-verify-file').files[0];
 
             if ( ! logId || isNaN( parseInt( logId, 10 ) ) ) {
-                showResult( 'error', '<?php echo esc_js( __( 'Please enter a valid Log ID.', 'cf7-waiver' ) ); ?>' );
+                showResult( 'error', '<?php echo esc_js( __( 'Please enter a valid Log ID.', 'sign-pdf-waiver-for-contact-form-7' ) ); ?>' );
                 return;
             }
             if ( ! file ) {
-                showResult( 'error', '<?php echo esc_js( __( 'Please select a PDF file.', 'cf7-waiver' ) ); ?>' );
+                showResult( 'error', '<?php echo esc_js( __( 'Please select a PDF file.', 'sign-pdf-waiver-for-contact-form-7' ) ); ?>' );
                 return;
             }
             if ( file.type !== 'application/pdf' && ! file.name.match(/\.pdf$/i) ) {
-                showResult( 'error', '<?php echo esc_js( __( 'Please select a PDF file.', 'cf7-waiver' ) ); ?>' );
+                showResult( 'error', '<?php echo esc_js( __( 'Please select a PDF file.', 'sign-pdf-waiver-for-contact-form-7' ) ); ?>' );
                 return;
             }
 
             btn.disabled    = true;
-            btn.textContent = '<?php echo esc_js( __( 'Verifying\u2026', 'cf7-waiver' ) ); ?>';
+            btn.textContent = '<?php echo esc_js( __( 'Verifying\u2026', 'sign-pdf-waiver-for-contact-form-7' ) ); ?>';
             result.style.display = 'none';
 
             var formData = new FormData();
@@ -594,7 +675,7 @@ function cf7w_verify_shortcode(): string {
             .then( function(r){ return r.json(); } )
             .then( function(data) {
                 btn.disabled    = false;
-                btn.textContent = '<?php echo esc_js( __( 'Verify Document', 'cf7-waiver' ) ); ?>';
+                btn.textContent = '<?php echo esc_js( __( 'Verify Document', 'sign-pdf-waiver-for-contact-form-7' ) ); ?>';
                 if ( data.success ) {
                     showResult( 'success', data.data.message, data.data.detail );
                 } else {
@@ -603,8 +684,8 @@ function cf7w_verify_shortcode(): string {
             })
             .catch( function(err) {
                 btn.disabled    = false;
-                btn.textContent = '<?php echo esc_js( __( 'Verify Document', 'cf7-waiver' ) ); ?>';
-                showResult( 'error', '<?php echo esc_js( __( 'Network error. Please try again.', 'cf7-waiver' ) ); ?>' );
+                btn.textContent = '<?php echo esc_js( __( 'Verify Document', 'sign-pdf-waiver-for-contact-form-7' ) ); ?>';
+                showResult( 'error', '<?php echo esc_js( __( 'Network error. Please try again.', 'sign-pdf-waiver-for-contact-form-7' ) ); ?>' );
             });
         });
 
@@ -639,13 +720,13 @@ function cf7w_ajax_verify_document(): void {
     if ( ! isset( $_POST['nonce'] )
       || ! wp_verify_nonce( $_POST['nonce'], 'cf7w_verify' ) ) {
         wp_send_json_error( array(
-            'message' => __( 'Security check failed. Please refresh and try again.', 'cf7-waiver' ),
+            'message' => __( 'Security check failed. Please refresh and try again.', 'sign-pdf-waiver-for-contact-form-7' ),
         ) );
     }
 
     $log_id = absint( $_POST['log_id'] ?? 0 );
     if ( ! $log_id ) {
-        wp_send_json_error( array( 'message' => __( 'Invalid Log ID.', 'cf7-waiver' ) ) );
+        wp_send_json_error( array( 'message' => __( 'Invalid Log ID.', 'sign-pdf-waiver-for-contact-form-7' ) ) );
     }
 
     // Look up the stored hash for this submission
@@ -658,29 +739,29 @@ function cf7w_ajax_verify_document(): void {
 
     if ( ! $row ) {
         wp_send_json_error( array(
-            'message' => __( 'No submission found for that Log ID.', 'cf7-waiver' ),
-            'detail'  => __( 'Check the Log ID on your audit trail page and try again.', 'cf7-waiver' ),
+            'message' => __( 'No submission found for that Log ID.', 'sign-pdf-waiver-for-contact-form-7' ),
+            'detail'  => __( 'Check the Log ID on your audit trail page and try again.', 'sign-pdf-waiver-for-contact-form-7' ),
         ) );
     }
 
     if ( empty( $row->doc_hash ) ) {
         wp_send_json_error( array(
-            'message' => __( 'This submission does not have a stored document hash.', 'cf7-waiver' ),
-            'detail'  => __( 'The audit trail feature may not have been enabled when this document was signed.', 'cf7-waiver' ),
+            'message' => __( 'This submission does not have a stored document hash.', 'sign-pdf-waiver-for-contact-form-7' ),
+            'detail'  => __( 'The audit trail feature may not have been enabled when this document was signed.', 'sign-pdf-waiver-for-contact-form-7' ),
         ) );
     }
 
     // Validate the uploaded file
     if ( empty( $_FILES['pdf_file'] ) || $_FILES['pdf_file']['error'] !== UPLOAD_ERR_OK ) {
         wp_send_json_error( array(
-            'message' => __( 'File upload failed.', 'cf7-waiver' ),
-            'detail'  => __( 'Please try again with a smaller file or check your connection.', 'cf7-waiver' ),
+            'message' => __( 'File upload failed.', 'sign-pdf-waiver-for-contact-form-7' ),
+            'detail'  => __( 'Please try again with a smaller file or check your connection.', 'sign-pdf-waiver-for-contact-form-7' ),
         ) );
     }
 
     $tmp_path = $_FILES['pdf_file']['tmp_name'] ?? '';
     if ( ! $tmp_path || ! is_uploaded_file( $tmp_path ) ) {
-        wp_send_json_error( array( 'message' => __( 'Invalid file upload.', 'cf7-waiver' ) ) );
+        wp_send_json_error( array( 'message' => __( 'Invalid file upload.', 'sign-pdf-waiver-for-contact-form-7' ) ) );
     }
 
     // Verify it is actually a PDF (check magic bytes)
@@ -689,7 +770,7 @@ function cf7w_ajax_verify_document(): void {
     fclose( $fh );
     if ( $magic !== '%PDF' ) {
         wp_send_json_error( array(
-            'message' => __( 'The uploaded file does not appear to be a valid PDF.', 'cf7-waiver' ),
+            'message' => __( 'The uploaded file does not appear to be a valid PDF.', 'sign-pdf-waiver-for-contact-form-7' ),
         ) );
     }
 
@@ -705,10 +786,10 @@ function cf7w_ajax_verify_document(): void {
     if ( hash_equals( $stored_hash, $upload_hash ) ) {
         // hash_equals() is timing-attack safe
         wp_send_json_success( array(
-            'message' => __( 'Document verified — this PDF has not been altered.', 'cf7-waiver' ),
+            'message' => __( 'Document verified — this PDF has not been altered.', 'sign-pdf-waiver-for-contact-form-7' ),
             'detail'  => sprintf(
                 /* translators: 1: form name, 2: submission date */
-                __( 'Submission #%1$d | Form: %2$s | Signed: %3$s', 'cf7-waiver' ),
+                __( 'Submission #%1$d | Form: %2$s | Signed: %3$s', 'sign-pdf-waiver-for-contact-form-7' ),
                 $log_id,
                 $form_name,
                 $entry_date
@@ -716,8 +797,9 @@ function cf7w_ajax_verify_document(): void {
         ) );
     } else {
         wp_send_json_error( array(
-            'message' => __( 'Verification failed — this PDF does not match our records.', 'cf7-waiver' ),
-            'detail'  => __( 'The document may have been modified after signing, or this is not the correct file for this Log ID. Ensure you have removed the audit trail page before uploading.', 'cf7-waiver' ),
+            'message' => __( 'Verification failed — this PDF does not match our records.', 'sign-pdf-waiver-for-contact-form-7' ),
+            'detail'  => __( 'The document may have been modified after signing, or this is not the correct file for this Log ID. Ensure you have removed the audit trail page before uploading.', 'sign-pdf-waiver-for-contact-form-7' ),
         ) );
     }
 }
+} // @endif can_use_premium_code__premium_only

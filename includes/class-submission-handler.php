@@ -1,7 +1,9 @@
 <?php
 if ( ! defined( 'ABSPATH' ) ) exit;
 
-require_once CF7W_DIR . 'includes/class-premium.php';
+if ( cf7w_fs()->can_use_premium_code__premium_only() ) {
+    require_once CF7W_DIR . 'includes/class-premium__premium_only.php';
+} // @endif can_use_premium_code__premium_only
 
 /**
  * CF7W_Submission_Handler
@@ -18,24 +20,58 @@ class CF7W_Submission_Handler {
 
         // Validate the signature field isn't empty when required
         add_filter( 'wpcf7_validate_cf7w_signature*', array( __CLASS__, 'validate_signature' ), 10, 2 );
+		
+		// Validate the consent checkbox for any signature field that has consent enabled.
+        // CF7 doesn't know about cf7w_consent_* fields so we hook into wpcf7_validate
+        // which fires for every submission and lets us add custom invalidations.
+        add_filter( 'wpcf7_validate', array( __CLASS__, 'validate_consent' ), 10, 2 );
     }
 
     // ── Signature validation ───────────────────────────────────────────────────
     public static function validate_signature( $result, $tag ) {
-        // phpcs:ignore WordPress.Security.NonceVerification.Missing -- runs inside CF7's wpcf7_validate filter; CF7 has already verified its nonce before firing this hook
         $value = isset( $_POST[ $tag->name ] ) ? sanitize_text_field( trim( wp_unslash( $_POST[ $tag->name ] ) ) ) : '';
         if ( empty( $value ) || $value === 'data:,' ) {
             $result->invalidate( $tag, __( 'Please provide your signature.', 'sign-pdf-waiver-for-contact-form-7' ) );
         }
         return $result;
     }
+	
+	// ── Consent checkbox validation ────────────────────────────────────────────
+    // Fires for every CF7 submission. Checks every cf7w_consent_* POST key
+    // and invalidates the corresponding signature field if unchecked.
+    public static function validate_consent( $result, $tags ) {
+        foreach ( $tags as $tag ) {
+            if ( $tag->basetype !== 'cf7w_signature' ) continue;
+            if ( ! $tag->get_option( 'consent', '', true ) ) continue;
+
+            $consent_name = 'cf7w_consent_' . $tag->name;
+            // phpcs:ignore WordPress.Security.NonceVerification.Missing -- nonce is verified in process(); validate_consent() is a CF7 validation filter that runs inside CF7's own nonce-verified pipeline.
+            $checked      = ! empty( $_POST[ $consent_name ] ) && '1' === sanitize_key( wp_unslash( $_POST[ $consent_name ] ) );
+
+            if ( ! $checked ) {
+                // Invalidate against the consent field name so CF7 shows
+                // the error next to the checkbox, not the signature canvas.
+                $result->invalidate( $tag, __( 'You must agree to sign electronically before signing.', 'sign-pdf-waiver-for-contact-form-7' ) );
+            }
+        }
+        return $result;
+    }
 
     // ── Main hook ──────────────────────────────────────────────────────────────
-    // phpcs:ignore WordPress.Security.NonceVerification.Missing -- process() fires inside CF7's wpcf7_before_send_mail action; CF7 verifies its own nonce before dispatching this hook
+    // Verify plugin-owned nonce before reading any $_POST data
     public static function process( $contact_form, &$abort, $submission ) {
-        $post_id  = $contact_form->id();
-        $settings = get_post_meta( $post_id, '_cf7w_settings', true );
-        if ( empty( $settings ) ) return;
+        // Verify our own nonce. wp_create_nonce() was called server-side when the
+		// form was rendered, so this is safe even for logged-out users.
+		$nonce = isset( $_POST['cf7w_submission_nonce'] )
+			? sanitize_text_field( wp_unslash( $_POST['cf7w_submission_nonce'] ) )
+			: '';
+		if ( ! wp_verify_nonce( $nonce, 'cf7w_submission' ) ) {
+			return; // Nonce missing or invalid — do not process
+		}
+
+		$post_id  = $contact_form->id();
+		$settings = get_post_meta( $post_id, '_cf7w_settings', true );
+		if ( empty( $settings ) ) return;
         // Continue if there are mappings OR visual placements — either requires processing
         $has_mappings = ! empty( $settings['mappings'] );
         $has_vp       = ! empty( $settings['visual_placements'] ) && ! empty( $settings['visual_placement_enabled'] );
@@ -63,13 +99,11 @@ class CF7W_Submission_Handler {
             // Fallback: if get_posted_data returned nothing, read directly from $_POST.
             // This handles edge cases where CF7 hasn't yet populated its internal store
             // when our hook fires (e.g. certain CF7 version combinations).
-            // phpcs:ignore WordPress.Security.NonceVerification.Missing,WordPress.Security.ValidatedSanitizedInput.InputNotSanitized,WordPress.Security.ValidatedSanitizedInput.MissingUnslash -- CF7 nonce verified before hook; isset() checks key presence only; value is unslashed on the next line
             if ( ( $raw === null || $raw === '' || $raw === array() )
                  && isset( $_POST[ $cf7_field ] ) ) {
                 $raw = wp_unslash( $_POST[ $cf7_field ] );
             }
             // Also try original (un-sanitized) name in $_POST
-            // phpcs:ignore WordPress.Security.NonceVerification.Missing,WordPress.Security.ValidatedSanitizedInput.InputNotSanitized,WordPress.Security.ValidatedSanitizedInput.MissingUnslash -- CF7 nonce verified before hook; isset() checks key presence only; value is unslashed on the next line
             if ( ( $raw === null || $raw === '' || $raw === array() )
                  && $cf7_field_raw !== $cf7_field
                  && isset( $_POST[ $cf7_field_raw ] ) ) {
@@ -102,7 +136,6 @@ class CF7W_Submission_Handler {
         }
         // Also check raw POST as fallback
         if ( ! $signature_data ) {
-            // phpcs:ignore WordPress.Security.NonceVerification.Missing -- CF7 nonce verified before this hook fires
             foreach ( wp_unslash( $_POST ) as $key => $val ) {
                 $key = sanitize_key( $key );
                 if ( false !== strpos( $key, 'signature' ) && is_string( $val ) && 0 === strpos( $val, 'data:image' ) ) {
@@ -219,7 +252,6 @@ class CF7W_Submission_Handler {
             // CF7's internal posted-data store even though the value is in $_POST.
             $vp_raw = null;
             foreach ( array( $vp_field_name, $vp_sanitized ) as $_k ) {
-                // phpcs:ignore WordPress.Security.NonceVerification.Missing,WordPress.Security.ValidatedSanitizedInput.InputNotSanitized,WordPress.Security.ValidatedSanitizedInput.MissingUnslash -- CF7 nonce verified before hook; isset() checks presence only; value is unslashed on next line
                 if ( isset( $_POST[ $_k ] ) && $_POST[ $_k ] !== '' ) {
                     $vp_raw = wp_unslash( $_POST[ $_k ] ); break;
                 }
@@ -282,71 +314,72 @@ class CF7W_Submission_Handler {
             'form_id'    => $post_id,
             'entry_date' => current_time( 'mysql' ),
             'ip_address' => self::get_ip(),
-            'user_agent' => sanitize_text_field( $_SERVER['HTTP_USER_AGENT'] ?? '' ),
+            'user_agent' => sanitize_text_field( wp_unslash( $_SERVER['HTTP_USER_AGENT'] ?? '' ) ),
             'form_data'  => wp_json_encode( $form_data ),
             'signature'  => $signature_data,
             'filled_pdf' => $filled_pdf ?: '',
             'doc_hash'   => $doc_hash,
         ), array( '%d', '%s', '%s', '%s', '%s', '%s', '%s', '%s' ) );
         $log_id = $wpdb->insert_id;
+		
+        // Defaults to true (keep) for backwards-compatibility.
+        $save_pdf       = isset( $settings['save_pdf'] )       ? (bool) $settings['save_pdf']       : true;
+        $save_signature = isset( $settings['save_signature'] ) ? (bool) $settings['save_signature'] : true;
 
         // ── [PREMIUM] Attach PDF + append audit trail to CF7 email body ────────
-        if ( function_exists( 'cf7w_fs' ) && cf7w_fs()->can_use_premium_code__premium_only() ) {
-
-            // Build the audit trail text block once — reused for every mail instance
-            $audit_block = self::build_audit_block( $log_id, $doc_hash, $post_id );
-
-            // wpcf7_mail_components fires once per mail instance (mail, mail_2).
-            // We append the PDF attachment and the audit trail block in one filter.
-            // Using a closure that captures $filled_pdf, $settings, $audit_block
-            // by value so each mail instance gets the same correct data.
-			add_filter(
-				'wpcf7_mail_components',
-				function ( array $components ) use ( $filled_pdf, $settings, $audit_block ): array {
-
-					// CF7 sets use_html in $components — use it to pick the right format
-					$is_html = ! empty( $components['use_html'] );
-					$block   = $is_html
-						? ( $audit_block['html'] ?? '' )
-						: ( $audit_block['text'] ?? '' );
-
-					if ( $block !== '' ) {
-						$components['body'] = ( $components['body'] ?? '' ) . $block;
-					}
-
-					// Attach PDF if using the older CF7 path
-					if ( $filled_pdf && file_exists( $filled_pdf )
-					  && ! empty( $settings['attach_pdf'] )
-					  && ! method_exists( $GLOBALS['cf7w_submission'] ?? new stdClass, 'add_extra_attachments' ) ) {
-						$components['attachments'][] = $filled_pdf;
-					}
-
-					return $components;
+        if ( cf7w_fs()->can_use_premium_code__premium_only() ) {
+			
+			// Build the certificate of completion PDF
+            $cert_path = '';
+            if ( $filled_pdf && file_exists( $filled_pdf ) ) {
+                $cert_path = self::generate_certificate( array(
+                    'log_id'          => $log_id,
+                    'post_id'         => $post_id,
+                    'filled_pdf'      => $filled_pdf,
+                    'doc_hash'        => $doc_hash,
+                    'sig_path'        => $sig_path,
+                    'form_data'       => $form_data,
+                    'submitter_email' => $submitter_email,
+                    'ip_address'      => self::get_ip(),
+                    'settings'        => $settings,
+                ) );
+            }
+			
+			// Attach filled PDF + certificate to CF7 emails
+            if ( ! empty( $settings['attach_pdf'] ) ) {
+				if (! empty( $settings['add_audit'] )) {
+					$attachments = array_filter( array( $filled_pdf, $cert_path ) );
+			    } else {
+					$attachments = array_filter( array( $filled_pdf ) );
 				}
-			);
-
-            // CF7 >= 5.4.1 also supports add_extra_attachments() for the attachment.
-            // We still use wpcf7_mail_components for body modification regardless of
-            // CF7 version since add_extra_attachments() only handles attachments, not body.
-            if ( $filled_pdf && file_exists( $filled_pdf )
-              && ! empty( $settings['attach_pdf'] )
-              && method_exists( $submission, 'add_extra_attachments' ) ) {
-                $submission->add_extra_attachments( $filled_pdf, 'mail' );
-                $submission->add_extra_attachments( $filled_pdf, 'mail_2' );
-                // When using add_extra_attachments(), remove the attachment logic
-                // from the filter above to avoid double-attaching.
-                // We do this by rebuilding the filter without the attachment part.
-                // Remove all filters added above and re-add body-only version.
-                remove_all_filters( 'wpcf7_mail_components' );
-                add_filter(
-                    'wpcf7_mail_components',
-                    function ( array $components ) use ( $audit_block ): array {
-                        if ( $audit_block !== '' ) {
-                            $components['body'] = ( $components['body'] ?? '' )
-                                . "\r\n\r\n" . $audit_block;
+                foreach ( $attachments as $attach ) {
+                    if ( ! file_exists( $attach ) ) continue;
+                    if ( method_exists( $submission, 'add_extra_attachments' ) ) {
+                        $submission->add_extra_attachments( $attach, 'mail' );
+                        $submission->add_extra_attachments( $attach, 'mail_2' );
+                    } else {
+                        $GLOBALS['cf7w_attachments'][] = $attach;
+                    }
+                }
+                // Fallback for older CF7
+                if ( ! method_exists( $submission, 'add_extra_attachments' ) ) {
+                    add_filter( 'wpcf7_mail_components', function( $components ) {
+                        foreach ( $GLOBALS['cf7w_attachments'] ?? array() as $path ) {
+                            $components['attachments'][] = $path;
                         }
                         return $components;
-                    }
+                    } );
+                }
+            }
+			
+			// Store certificate path in DB
+            if ( $cert_path && file_exists( $cert_path ) ) {
+                $wpdb->update(
+                    cf7w_db_table(),
+                    array( 'cert_pdf' => $cert_path ),
+                    array( 'id'       => $log_id ),
+                    array( '%s' ),
+                    array( '%d' )
                 );
             }
 
@@ -361,15 +394,8 @@ class CF7W_Submission_Handler {
                 'submission'      => $submission,
                 'doc_hash'        => $doc_hash,
             ) );
-
-        } // @endif can_use_premium_code__premium_only
-
-        // ── Cleanup: delete files if admin opted not to keep them ─────────────
-        // Defaults to true (keep) for backwards-compatibility.
-        $save_pdf       = isset( $settings['save_pdf'] )       ? (bool) $settings['save_pdf']       : true;
-        $save_signature = isset( $settings['save_signature'] ) ? (bool) $settings['save_signature'] : true;
-
-        if ( ! $save_signature && $sig_path && file_exists( $sig_path ) ) {
+			
+	    if ( ! $save_signature && $sig_path && file_exists( $sig_path ) ) {
             cf7w_delete_file( $sig_path );
         }
 
@@ -388,17 +414,30 @@ class CF7W_Submission_Handler {
                 array( '%d' )
             );
         }
+
+        } // @endif can_use_premium_code__premium_only
     }
 
     // ── Save base64 PNG signature to disk ──────────────────────────────────────
     private static function save_signature( string $data_uri, int $form_id ): string {
-        if ( ! $data_uri || 0 !== strpos( $data_uri, 'data:image/png;base64,' ) ) return '';
-        $dir = CF7W_SECURE_DIR . 'signatures/';
-        if ( ! is_dir( $dir ) ) wp_mkdir_p( $dir );
-        $path = $dir . 'sig_' . $form_id . '_' . time() . '.png';
-        $data = base64_decode( str_replace( 'data:image/png;base64,', '', $data_uri ) );
-        if ( $data ) file_put_contents( $path, $data );
-        return file_exists( $path ) ? $path : '';
+		if ( ! $data_uri || 0 !== strpos( $data_uri, 'data:image/png;base64,' ) ) return '';
+
+		$dir = CF7W_SECURE_DIR . 'signatures/';
+		if ( ! is_dir( $dir ) ) wp_mkdir_p( $dir );
+
+		$path = $dir . 'sig_' . $form_id . '_' . time() . '.png';
+		$data = base64_decode( str_replace( 'data:image/png;base64,', '', $data_uri ) );
+
+		if ( $data ) {
+			global $wp_filesystem;
+			if ( empty( $wp_filesystem ) ) {
+				require_once ABSPATH . 'wp-admin/includes/file.php';
+				WP_Filesystem();
+			}
+			$wp_filesystem->put_contents( $path, $data, FS_CHMOD_FILE );
+		}
+
+		return file_exists( $path ) ? $path : '';
     }
 
     private static function get_ip(): string {
@@ -412,92 +451,87 @@ class CF7W_Submission_Handler {
         return '0.0.0.0';
     }
 	
-    // ── [PREMIUM] Build audit trail text block ─────────────────────────────────
-	private static function build_audit_block(
-		int    $log_id,
-		string $doc_hash,
-		int    $post_id
-	): array {
-		if ( ! function_exists( 'cf7w_fs' )
-		  || ! cf7w_fs()->can_use_premium_code__premium_only() ) return array( 'text' => '', 'html' => '' );
-		// @ifdef can_use_premium_code__premium_only
+    // ── [PREMIUM] Generate Certificate of Completion PDF ──────────────────────
+    // @ifdef can_use_premium_code__premium_only
+    private static function generate_certificate( array $data ): string {
+        if ( ! cf7w_fs()->can_use_premium_code__premium_only() ) return '';
 
-		if ( ! $doc_hash ) return array( 'text' => '', 'html' => '' );
+        $log_id     = (int)    ( $data['log_id']          ?? 0 );
+        $post_id    = (int)    ( $data['post_id']          ?? 0 );
+        $filled_pdf = (string) ( $data['filled_pdf']       ?? '' );
+        $doc_hash   = (string) ( $data['doc_hash']         ?? '' );
+        $sig_path   = (string) ( $data['sig_path']         ?? '' );
+        $form_data  = (array)  ( $data['form_data']        ?? array() );
+        $ip_address = (string) ( $data['ip_address']       ?? '' );
+        $settings   = (array)  ( $data['settings']         ?? array() );
 
-		$form_name  = get_the_title( $post_id ) ?: 'Form #' . $post_id;
-		$site_name  = get_bloginfo( 'name' );
-		$signed_at  = current_time( 'j F Y \a\t g:ia T' );
+        $form_name   = get_the_title( $post_id ) ?: 'Form #' . $post_id;
+        $site_name   = get_bloginfo( 'name' );
+        $site_url    = get_bloginfo( 'url' );
+        $timestamp   = current_time( 'j F Y \a\t g:i:s A T' );
+        $doc_name    = $filled_pdf ? basename( $filled_pdf ) : 'Unknown';
 
-		global $wpdb;
-		$verify_page_id = $wpdb->get_var(
-			"SELECT ID FROM {$wpdb->posts}
-			 WHERE post_status = 'publish'
-			 AND post_type = 'page'
-			 AND post_content LIKE '%cf7w_verify%'
-			 LIMIT 1"
-		);
-		$verify_url = $verify_page_id
-			? add_query_arg( 'log_id', $log_id, get_permalink( $verify_page_id ) )
-			: '';
+        // Count pages in the signed PDF
+        $page_count = 0;
+        if ( $filled_pdf && file_exists( $filled_pdf ) ) {
+            $pdf_bytes  = file_get_contents( $filled_pdf );
+            $page_index = CF7W_PDF_Filler::debug_build_index( $pdf_bytes );
+            foreach ( $page_index as $n => $info ) {
+                $body = CF7W_PDF_Filler::debug_get_body( $pdf_bytes, $info );
+                if ( $body && preg_match( '/\/Type\s*\/Page\b/', $body )
+                  && ! preg_match( '/\/Type\s*\/Pages\b/', $body ) ) {
+                    $page_count++;
+                }
+            }
+        }
 
-		// ── Plain text version ─────────────────────────────────────────────────────
-		$divider = str_repeat( '-', 60 );
-		$text  = "\n\n" . $divider . "\n";
-		$text .= "DOCUMENT RECORD\n";
-		$text .= $divider . "\n";
-		$text .= "Log ID:   {$log_id}\n";
-		$text .= "Form:     {$form_name}\n";
-		$text .= "Signed:   {$signed_at}\n";
-		$text .= "SHA-256:  {$doc_hash}\n";
-		$text .= $divider . "\n";
-		$text .= "The SHA-256 hash above uniquely identifies the signed PDF.\n";
-		if ( $verify_url ) {
-			$text .= "To verify the document has not been altered, upload it at:\n";
-			$text .= "{$verify_url}\n";
-			$text .= "Enter Log ID {$log_id} when prompted.\n";
-		} else {
-			$text .= "Contact {$site_name} and quote Log ID {$log_id} to verify.\n";
+        // Find verification page URL
+        global $wpdb;
+        $verify_page_id = $wpdb->get_var(
+            "SELECT ID FROM {$wpdb->posts}
+             WHERE post_status = 'publish'
+             AND post_type = 'page'
+             AND post_content LIKE '%cf7w_verify%'
+             LIMIT 1"
+        );
+        $verify_url = $verify_page_id
+            ? add_query_arg( 'log_id', $log_id, get_permalink( $verify_page_id ) )
+            : '';
+
+        // Output directory
+        $cert_dir = CF7W_SECURE_DIR . 'certificates/';
+        wp_mkdir_p( $cert_dir );
+        $cert_path  = $cert_dir . 'certificate_' . $log_id . '_' . time() . '.pdf';
+
+        // Build the certificate using CF7W_PDF_Filler::build_certificate_pdf()
+        $cert_bytes = CF7W_PDF_Filler::build_certificate_pdf( array(
+            'log_id'       => $log_id,
+            'form_name'    => $form_name,
+            'site_name'    => $site_name,
+            'site_url'     => $site_url,
+            'doc_name'     => $doc_name,
+            'doc_hash'     => $doc_hash,
+            'page_count'   => $page_count,
+            'timestamp'    => $timestamp,
+            'ip_address'   => $ip_address,
+            'form_data'    => $form_data,
+            'sig_path'     => $sig_path,
+            'verify_url'   => $verify_url,
+            'status'       => 'Signed',
+        ) );
+
+        global $wp_filesystem;
+		if ( empty( $wp_filesystem ) ) {
+			require_once ABSPATH . 'wp-admin/includes/file.php';
+			WP_Filesystem();
+		}
+		if ( $cert_bytes && $wp_filesystem->put_contents( $cert_path, $cert_bytes, FS_CHMOD_FILE ) ) {
+			error_log( 'CF7W certificate: generated ' . $cert_path );
+			return $cert_path;
 		}
 
-		// ── HTML version ──────────────────────────────────────────────────────────
-		$html  = '<br><br>';
-		$html .= '<table style="border-collapse:collapse;font-family:monospace;font-size:13px;'
-			   . 'border:1px solid #d1d5db;border-radius:4px;width:100%;max-width:560px;">';
-		$html .= '<tr style="background:#f3f4f6;">'
-			   . '<td colspan="2" style="padding:8px 12px;font-weight:700;font-size:14px;'
-			   . 'letter-spacing:0.05em;">DOCUMENT RECORD</td></tr>';
-		$rows = array(
-			'Log ID'   => esc_html( $log_id ),
-			'Form'     => esc_html( $form_name ),
-			'Signed'   => esc_html( $signed_at ),
-			'SHA-256'  => '<span style="word-break:break-all;">' . esc_html( $doc_hash ) . '</span>',
-		);
-		$stripe = false;
-		foreach ( $rows as $label => $value ) {
-			$bg     = $stripe ? 'background:#f9fafb;' : '';
-			$html  .= '<tr style="' . $bg . '">'
-				   . '<td style="padding:6px 12px;font-weight:600;white-space:nowrap;'
-				   . 'color:#374151;vertical-align:top;">' . esc_html( $label ) . '</td>'
-				   . '<td style="padding:6px 12px;color:#111827;">' . $value . '</td>'
-				   . '</tr>';
-			$stripe = ! $stripe;
-		}
-		$html .= '<tr><td colspan="2" style="padding:8px 12px;color:#6b7280;font-size:12px;'
-			   . 'border-top:1px solid #e5e7eb;">';
-		$html .= 'The SHA-256 hash above uniquely identifies the signed PDF. ';
-		if ( $verify_url ) {
-			$html .= 'To verify the document has not been altered, '
-				   . '<a href="' . esc_url( $verify_url ) . '" style="color:#2563eb;">'
-				   . 'upload it here</a> and enter Log ID ' . (int) $log_id . '.';
-		} else {
-			$html .= 'Contact ' . esc_html( $site_name ) . ' and quote Log ID '
-				   . (int) $log_id . ' to verify.';
-		}
-		$html .= '</td></tr>';
-		$html .= '</table>';
-
-		return array( 'text' => $text, 'html' => $html );
-
-		// @endif can_use_premium_code__premium_only
-	}
+        error_log( 'CF7W certificate: failed to write ' . $cert_path );
+        return '';
+    }
+    // @endif can_use_premium_code__premium_only
 }

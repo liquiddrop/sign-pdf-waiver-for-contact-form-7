@@ -8,6 +8,18 @@ if ( ! defined( 'ABSPATH' ) ) exit;
  * PDFs (PDF 1.5+, /ObjStm). Uses pdftk+FDF when available; pure-PHP otherwise.
  */
 class CF7W_PDF_Filler {
+	
+	/**
+	 * Returns an initialised WP_Filesystem instance.
+	 */
+	private static function fs(): WP_Filesystem_Base {
+		global $wp_filesystem;
+		if ( empty( $wp_filesystem ) ) {
+			require_once ABSPATH . 'wp-admin/includes/file.php';
+			WP_Filesystem();
+		}
+		return $wp_filesystem;
+	}
 
     // --
     // PUBLIC ENTRY POINT
@@ -26,13 +38,13 @@ class CF7W_PDF_Filler {
             ? get_attached_file( $attach_id )
             : ( isset( $settings['pdf_url'] ) ? self::url_to_path( $settings['pdf_url'] ) : '' );
 
-        if ( ! $src_path || ! file_exists( $src_path ) ) {
+        if ( ! $src_path || ! self::fs()->exists( $src_path ) ) {
             ( defined( 'WP_DEBUG' ) && WP_DEBUG ) && error_log( 'CF7W: PDF source not found: ' . $src_path );
             return '';
         }
 
         $out_dir = CF7W_SECURE_DIR . 'filled/';
-        if ( ! is_dir( $out_dir ) ) wp_mkdir_p( $out_dir );
+        if ( ! self::fs()->is_dir( $out_dir ) ) wp_mkdir_p( $out_dir );
 
         $scheme   = $settings['pdf_filename_scheme'] ?? '';
         $out_name = self::build_filename( $scheme, $pdf_data, $form_id );
@@ -82,8 +94,8 @@ class CF7W_PDF_Filler {
         }
 
         try {
-            $pdf = file_get_contents( $src_path );
-            if ( $pdf === false ) throw new Exception( 'Cannot read PDF source' );
+            $pdf = self::fs()->get_contents( $src_path );
+			if ( $pdf === false ) throw new Exception( 'Cannot read PDF source' );
 
             // Strategy 1: pdftk + FDF (most reliable, handles all PDF types)
             $filled = false;
@@ -91,20 +103,20 @@ class CF7W_PDF_Filler {
                 $filled = self::fill_with_pdftk( $src_path, $out_path, $pdf_data );
                 ( defined( 'WP_DEBUG' ) && WP_DEBUG ) && error_log( 'CF7W fill: strategy=pdftk filled=' . ($filled?'yes':'no') );
                 if ( $filled ) {
-                    $pdf2 = file_get_contents( $out_path );
+                    $pdf2 = self::fs()->get_contents( $out_path );
                     if ( $pdf2 ) {
                         ( defined( 'WP_DEBUG' ) && WP_DEBUG ) && error_log( 'CF7W fill: pdf2 size=' . strlen($pdf2) . ' vp_enabled=' . ($vp_enabled?'yes':'no') . ' placements=' . count($vp_placements) . ' field_values=' . count($vp_field_values) );
                         // Stamp signature using original for /Rect lookup
-                        if ( $sig['path'] && file_exists( $sig['path'] ) ) {
-                            $pdf2 = self::stamp_signature( $pdf2, $sig, $pdf );
-                        }
+                        if ( $sig['path'] && self::fs()->exists( $sig['path'] ) ) {
+							$pdf2 = self::stamp_signature( $pdf2, $sig, $pdf );
+						}
                         // Stamp visual placements -- pass original $pdf as ref for page geometry
                         if ( $vp_enabled && ! empty( $vp_placements ) ) {
                             $pdf2 = self::stamp_visual_placements( $pdf2, $vp_placements, $vp_field_values, $settings, $pdf );
                         }
                         // Always flatten (make fields read-only)
                         $pdf2 = self::flatten_pdf( $pdf2 );
-                        file_put_contents( $out_path, $pdf2 );
+                        self::write_file( $out_path, $pdf2 );
                     }
                 }
             }
@@ -138,20 +150,31 @@ class CF7W_PDF_Filler {
                         }
                     }
                 }
-                if ( ! $vp_handled_sig && $sig['path'] && file_exists( $sig['path'] ) ) {
+                if ( ! $vp_handled_sig && $sig['path'] && self::fs()->exists( $sig['path'] ) ) {
                     $pdf = self::stamp_signature( $pdf, $sig, $original_pdf );
                 }
                 // Always flatten (make fields read-only) -- no longer a user option
                 $pdf = self::flatten_pdf( $pdf );
-                if ( file_put_contents( $out_path, $pdf ) === false ) throw new Exception( 'Cannot write output' );
+                if ( ! self::write_file( $out_path, $pdf ) ) {
+					throw new Exception( 'Cannot write output' );
+				}
             }
         } catch ( Exception $e ) {
             ( defined( 'WP_DEBUG' ) && WP_DEBUG ) && error_log( 'CF7W PDF Filler: ' . $e->getMessage() );
-            copy( $src_path, $out_path );
+            self::fs()->copy( $src_path, $out_path, true );
         }
 
-        return file_exists( $out_path ) ? $out_path : '';
+        return self::fs()->exists( $out_path ) ? $out_path : '';
     }
+
+	private static function write_file( string $path, string $contents ): bool {
+		global $wp_filesystem;
+		if ( empty( $wp_filesystem ) ) {
+			require_once ABSPATH . 'wp-admin/includes/file.php';
+			WP_Filesystem();
+		}
+		return (bool) $wp_filesystem->put_contents( $path, $contents, FS_CHMOD_FILE );
+	}
 
     // Build output filename from a scheme string with {token} placeholders
     public static function build_filename( string $scheme, array $pdf_data, int $form_id ): string {
@@ -168,7 +191,7 @@ class CF7W_PDF_Filler {
         if ( ! $name ) $name = 'waiver_' . $form_id . '_' . time();
         if ( strtolower( substr( $name, -4 ) ) !== '.pdf' ) $name .= '.pdf';
         $out_dir = CF7W_SECURE_DIR . 'filled/';
-        if ( file_exists( $out_dir . $name ) ) $name = substr( $name, 0, -4 ) . '_' . time() . '.pdf';
+        if ( self::fs()->exists( $out_dir . $name ) ) $name = substr( $name, 0, -4 ) . '_' . time() . '.pdf';
         return $name;
     }
 
@@ -1106,7 +1129,7 @@ class CF7W_PDF_Filler {
     /** Debug helper: stamp VP onto a PDF file with given dummy values. Returns stamped PDF string or false. */
     /** @return string|false */
     public static function test_stamp_vp( string $src_path, array $placements, array $field_values, array $settings ) {
-        $pdf = @file_get_contents( $src_path );
+        $pdf = self::fs()->get_contents( $src_path );
         if ( ! $pdf ) return false;
         $result = self::stamp_visual_placements( $pdf, $placements, $field_values, $settings );
         return $result !== $pdf || ! empty( $placements ) ? $result : false;
@@ -1287,9 +1310,9 @@ class CF7W_PDF_Filler {
                              || in_array( sanitize_key( $cf7_field ), $sig_field_names, true )
                              || ( strpos( $cf7_field, 'cf7w_signature' ) === 0 )
                              || ( strpos( sanitize_key( $cf7_field ), 'cf7w_signature' ) === 0 );
-                ( defined( 'WP_DEBUG' ) && WP_DEBUG ) && error_log( 'CF7W vp is_sig_field=' . ($is_sig_field?'YES':'NO') . ' cf7_field=' . $cf7_field . ' sig_field_names=[' . implode(',', $sig_field_names) . '] sig_path_ok=' . ($sig_path && file_exists($sig_path) ? 'YES' : 'NO') );
+                ( defined( 'WP_DEBUG' ) && WP_DEBUG ) && error_log( 'CF7W vp is_sig_field=' . ($is_sig_field?'YES':'NO') . ' cf7_field=' . $cf7_field . ' sig_field_names=[' . implode(',', $sig_field_names) . '] sig_path_ok=' . ($sig_path && self::fs()->exists($sig_path) ? 'YES' : 'NO') );
                 if ( $is_sig_field ) {
-                    if ( $sig_path && file_exists( $sig_path ) ) {
+                    if ( $sig_path && self::fs()->exists( $sig_path ) ) {
                         // Stamp inline -- converted to JPEG and written as an Image XObject
                         $im_sig = @imagecreatefrompng( $sig_path );
                         if ( $im_sig ) {
@@ -1299,7 +1322,8 @@ class CF7W_PDF_Filler {
                             imagefill( $flat, 0, 0, $white );
                             imagecopy( $flat, $im_sig, 0, 0, 0, 0, $sw, $sh );
                             imagedestroy( $im_sig );
-                            ob_start(); imagejpeg( $flat, null, 92 ); $sig_jpeg = ob_get_clean(); imagedestroy( $flat );
+                            $jpeg = self::image_to_jpeg( $flat );
+                            imagedestroy( $flat );
                             if ( $sig_jpeg ) {
                                 // Compute PDF coords
                                 $sig_px_x   = floatval( $pl['x'] ?? 0 );
@@ -1813,6 +1837,47 @@ endobj
         return 5;
     }
 
+
+    /**
+     * Encode a GD image resource to JPEG bytes using a memory stream.
+     *
+     * Uses php://memory instead of output buffering so there is no risk
+     * of leaving an unclosed buffer if imagejpeg() fails.
+     *
+     * Returns the JPEG byte string, or empty string on failure.
+     * The caller is responsible for calling imagedestroy() on $image.
+     *
+     * @param resource|\GdImage $image  GD image resource
+     * @param int               $quality JPEG quality 0–100
+     * @return string
+     */
+    private static function image_to_jpeg( $image, int $quality = 92 ): string {
+        $stream = fopen( 'php://memory', 'r+' );
+        if ( $stream === false ) {
+            // php://memory unavailable — fall back to output buffer with
+            // explicit cleanup in both success and failure paths
+            ob_start();
+            $ok = imagejpeg( $image, null, $quality );
+            if ( ! $ok ) {
+                ob_end_clean();
+                return '';
+            }
+            return (string) ob_get_clean();
+        }
+
+        $ok = imagejpeg( $image, $stream, $quality );
+        if ( ! $ok ) {
+            fclose( $stream );
+            return '';
+        }
+
+        rewind( $stream );
+        $jpeg = stream_get_contents( $stream );
+        fclose( $stream );
+
+        return $jpeg !== false ? $jpeg : '';
+    }
+
     private static function stamp_signature( string $pdf, array $sig, string $ref_pdf = '' ): string {
         if ( ! function_exists( 'imagecreatefrompng' ) ) {
             ( defined( 'WP_DEBUG' ) && WP_DEBUG ) && error_log( 'CF7W stamp_signature: GD not available' ); return $pdf;
@@ -1834,7 +1899,8 @@ endobj
         imagecopy( $flat, $im, 0, 0, 0, 0, $iw, $ih );
         imagedestroy( $im );
 
-        ob_start(); imagejpeg( $flat, null, 92 ); $jpeg = ob_get_clean(); imagedestroy( $flat );
+        $jpeg = self::image_to_jpeg( $flat );
+        imagedestroy( $flat );
         if ( ! $jpeg ) {
             ( defined( 'WP_DEBUG' ) && WP_DEBUG ) && error_log( 'CF7W stamp_signature: imagejpeg failed' ); return $pdf;
         }
@@ -2399,12 +2465,12 @@ endobj
 
     private static function fill_with_pdftk( string $src, string $dst, array $data ): bool {
         $fdf_path = $dst . '.fdf';
-        if ( file_put_contents( $fdf_path, self::build_fdf( $data ) ) === false ) return false;
+        if ( self::fs()->put_contents( $fdf_path, self::build_fdf( $data ), FS_CHMOD_FILE ) === false ) return false;
         $cmd = 'pdftk ' . escapeshellarg($src) . ' fill_form ' . escapeshellarg($fdf_path)
              . ' output ' . escapeshellarg($dst) . ' need_appearances 2>&1';
         @shell_exec( $cmd );
         cf7w_delete_file( $fdf_path );
-        if ( file_exists( $dst ) && filesize( $dst ) > 0 ) return true;
+        if ( self::fs()->exists( $dst ) && self::fs()->size( $dst ) > 0 ) return true;
         return false;
     }
 
@@ -2538,148 +2604,311 @@ endobj
         return '';
     }
 	
-    // ── AUDIT TRAIL PAGE ──────────────────────────────────────────────────────
-    // Appends a new page containing audit trail text to the PDF.
-    // Called by CF7W_Premium::append_audit_trail() after the PDF is filled.
-    // Uses apply_incremental() so it never rewrites existing objects.
-    // --
-	public static function append_audit_page( string $pdf, array $lines ): string {
+    // ── CERTIFICATE OF COMPLETION ──────────────────────────────────────────────
+    // Builds a standalone PDF certificate as raw bytes.
+    // Uses only PDF primitives — no external libraries, no GD for text.
+    // The signature image is embedded as a JPEG XObject.
+    // ──────────────────────────────────────────────────────────────────────────
+    public static function build_certificate_pdf( array $data ): string {
 
-		$index   = self::build_obj_index( $pdf );
-		$updates = array();
-		$max_obj = $index ? max( array_keys( $index ) ) : 1;
+        $log_id     = (int)    ( $data['log_id']     ?? 0 );
+        $form_name  = (string) ( $data['form_name']  ?? 'Waiver' );
+        $site_name  = (string) ( $data['site_name']  ?? '' );
+        $site_url   = (string) ( $data['site_url']   ?? '' );
+        $doc_name   = (string) ( $data['doc_name']   ?? '' );
+        $doc_hash   = (string) ( $data['doc_hash']   ?? '' );
+        $page_count = (int)    ( $data['page_count'] ?? 0 );
+        $timestamp  = (string) ( $data['timestamp']  ?? '' );
+        $ip_address = (string) ( $data['ip_address'] ?? '' );
+        $form_data  = (array)  ( $data['form_data']  ?? array() );
+        $sig_path   = (string) ( $data['sig_path']   ?? '' );
+        $verify_url = (string) ( $data['verify_url'] ?? '' );
+        $status     = (string) ( $data['status']     ?? 'Signed' );
 
-		// Find the /Pages root node
-		$pages_num  = null;
-		$pages_body = null;
-		foreach ( $index as $n => $info ) {
-			$body = self::get_obj_body( $pdf, $info );
-			if ( $body && preg_match( '/\/Type\s*\/Pages\b/', $body ) ) {
-				$pages_num  = $n;
-				$pages_body = $body;
-				break;
-			}
-		}
-		if ( $pages_num === null ) {
-			error_log( 'CF7W append_audit_page: /Pages root not found' );
-			return $pdf;
-		}
+        // Page dimensions — A4 portrait
+        $pw = 595.0; $ph = 842.0;
+        $mx = 50.0;  // left/right margin
+        $y  = 780.0; // current y position (top to bottom)
 
-		$page_w   = 612.0;
-		$page_h   = 792.0;
-		$margin_x = 50.0;
-		$y        = 720.0;
-		$line_h   = 15.0;
-		$head_h   = 26.0;
+        // ── Font objects ───────────────────────────────────────────────────────
+        $f_reg  = '<</Type /Font /Subtype /Type1 /BaseFont /Helvetica'
+                . ' /Encoding /WinAnsiEncoding>>';
+        $f_bold = '<</Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold'
+                . ' /Encoding /WinAnsiEncoding>>';
+        $f_mono = '<</Type /Font /Subtype /Type1 /BaseFont /Courier'
+                . ' /Encoding /WinAnsiEncoding>>';
 
-		// Build content stream using only ASCII-safe characters.
-		// PDF WinAnsiEncoding cannot represent multi-byte UTF-8 characters —
-		// use plain ASCII hyphens for divider lines, never Unicode box-drawing.
-		$cs_ops = "BT\n";
+        $objects = array(); // obj_num => raw object string
+        $obj     = 1;       // object counter
 
-		foreach ( $lines as $i => $line ) {
-			// Sanitise to printable ASCII only — strip anything outside 0x20-0x7E
-			// which WinAnsiEncoding cannot represent reliably across all viewers.
-			$ascii = preg_replace( '/[^\x20-\x7E]/', '', $line );
+        // Font objects
+        $obj_freg  = $obj++;  $objects[ $obj_freg  ] = self::pdf_obj( $obj_freg,  $f_reg );
+        $obj_fbold = $obj++;  $objects[ $obj_fbold ] = self::pdf_obj( $obj_fbold, $f_bold );
+        $obj_fmono = $obj++;  $objects[ $obj_fmono ] = self::pdf_obj( $obj_fmono, $f_mono );
 
-			// Escape PDF literal string special characters
-			$safe = str_replace(
-				array( '\\', '(', ')' ),
-				array( '\\\\', '\\(', '\\)' ),
-				$ascii
-			);
+        $resources = "<</Font<</F1 {$obj_freg} 0 R /F2 {$obj_fbold} 0 R /F3 {$obj_fmono} 0 R>>>>";
 
-			if ( $i === 0 ) {
-				// Heading — 13pt bold
-				$cs_ops .= "/CF7AuditBold 13 Tf\n";
-				$cs_ops .= "1 0 0 1 {$margin_x} {$y} Tm\n";
-				$cs_ops .= "({$safe}) Tj\n";
-				$y -= $head_h;
+        // ── Build content stream ───────────────────────────────────────────────
+        $cs = "BT\n";
 
-			} elseif ( strlen( $ascii ) > 0 && str_repeat( $ascii[0], strlen( $ascii ) ) === $ascii ) {
-				// Divider — a line of repeated identical characters (e.g. all hyphens).
-				// Draw as a grey rectangle instead of text for a cleaner look.
-				$cs_ops .= "ET\n";
-				$rule_y   = round( $y + 5, 2 );
-				$rule_w   = round( $page_w - $margin_x * 2, 2 );
-				$cs_ops  .= "0.75 0.75 0.75 rg\n";
-				$cs_ops  .= "{$margin_x} {$rule_y} {$rule_w} 0.75 re f\n";
-				$cs_ops  .= "0 0 0 rg\n";
-				$cs_ops  .= "BT\n/CF7AuditFont 10 Tf\n";
-				$y       -= $line_h;
+        // Helper: safe PDF string — strip non-ASCII, escape special chars
+        $safe = function( string $s ): string {
+            $s = preg_replace( '/[^\x20-\x7E]/', '', $s );
+            return str_replace( array('\\','(',')'), array('\\\\','\\(','\\)'), $s );
+        };
 
-			} else {
-				// Body line — 10pt regular
-				$cs_ops .= "/CF7AuditFont 10 Tf\n";
-				$cs_ops .= "1 0 0 1 {$margin_x} {$y} Tm\n";
-				$cs_ops .= "({$safe}) Tj\n";
-				$y -= $line_h;
-			}
-		}
+        // Helper: draw a line of text using Tm (absolute positioning)
+        $line = function( float $x, float $y, string $font_obj, float $size, string $text ) use ( $safe ): string {
+            return "/F{$font_obj} {$size} Tf 1 0 0 1 {$x} {$y} Tm ({$safe($text)}) Tj\n";
+        };
 
-		$cs_ops .= "ET\n";
+        // Helper: grey horizontal rule
+        $rule = function( float $y, float $from_x, float $to_x, float $thickness = 0.5 ): string {
+            return "ET\n0.7 0.7 0.7 rg {$from_x} {$y} " . ($to_x - $from_x) . " {$thickness} re f\n0 0 0 rg\nBT\n";
+        };
 
-		// Content stream object
-		$max_obj++;
-		$cs_num = $max_obj;
-		$updates[ $cs_num ] = "{$cs_num} 0 obj\n"
-			. "<</Length " . strlen( $cs_ops ) . ">>\n"
-			. "stream\n{$cs_ops}endstream\nendobj\n";
+        // ── Header ─────────────────────────────────────────────────────────────
+        // Blue header bar
+        $cs .= "ET\n";
+        $cs .= "0.145 0.322 0.694 rg\n"; // #2552b1
+        $cs .= "{$mx} 805 " . ($pw - $mx * 2) . " 30 re f\n";
+        $cs .= "1 1 1 rg\n"; // white text
+        $cs .= "BT\n";
+        $cs .= $line( $mx + 6, 813, '2', 13, 'CERTIFICATE OF COMPLETION' );
+        $cs .= "ET\n0 0 0 rg\nBT\n"; // reset to black
 
-		// Font objects — regular and bold, both self-contained
-		$font_regular = '<</Type /Font /Subtype /Type1'
-			. ' /BaseFont /Helvetica /Encoding /WinAnsiEncoding>>';
-		$font_bold    = '<</Type /Font /Subtype /Type1'
-			. ' /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding>>';
+        // Document title
+        $cs .= $line( $mx, $y, '2', 16, $safe( $form_name ) );
+        $y -= 22;
 
-		// New page object with both fonts in its resource dict
-		$max_obj++;
-		$page_num = $max_obj;
-		$updates[ $page_num ] = "{$page_num} 0 obj\n"
-			. "<</Type /Page"
-			. " /Parent {$pages_num} 0 R"
-			. " /MediaBox [0 0 {$page_w} {$page_h}]"
-			. " /Contents {$cs_num} 0 R"
-			. " /Resources<<"
-				. "/Font<<"
-					. "/CF7AuditFont {$font_regular}"
-					. "/CF7AuditBold {$font_bold}"
-				. ">>"
-			. ">>"
-			. ">>\n"
-			. "endobj\n";
+        $cs .= $line( $mx, $y, '1', 10, $safe( $site_name ) . ' — ' . $safe( $site_url ) );
+        $y -= 8;
 
-		// Update /Pages: increment /Count, append new page to /Kids
-		$new_pages_body = $pages_body;
+        $cs .= $rule( $y, $mx, $pw - $mx, 1.0 );
+        $y -= 16;
 
-		if ( preg_match( '/\/Count\s+(\d+)/', $new_pages_body, $cm ) ) {
-			$new_count      = (int) $cm[1] + 1;
-			$new_pages_body = str_replace( $cm[0], '/Count ' . $new_count, $new_pages_body );
-		} else {
-			$new_pages_body = self::inject_before_end( $new_pages_body, '/Count 1' );
-		}
+        // ── Status banner ──────────────────────────────────────────────────────
+        $cs .= "ET\n0.902 0.973 0.902 rg\n"; // light green
+        $cs .= "{$mx} " . ($y - 4) . " " . ($pw - $mx * 2) . " 18 re f\n";
+        $cs .= "0.133 0.545 0.133 rg\n"; // dark green text
+        $cs .= "BT\n";
+        $cs .= $line( $mx + 6, $y + 2, '2', 11, '✓  Status: ' . $safe( $status ) );
+        $cs .= "ET\n0 0 0 rg\nBT\n";
+        $y -= 28;
 
-		if ( preg_match( '/\/Kids\s*\[([^\]]*)\]/', $new_pages_body, $km ) ) {
-			$new_pages_body = str_replace(
-				$km[0],
-				'/Kids [' . trim( $km[1] ) . ' ' . $page_num . ' 0 R]',
-				$new_pages_body
-			);
-		} else {
-			$new_pages_body = self::inject_before_end(
-				$new_pages_body,
-				'/Kids [' . $page_num . ' 0 R]'
-			);
-		}
+        // ── Document details ───────────────────────────────────────────────────
+        $cs .= $line( $mx, $y, '2', 11, 'Document Details' );
+        $y -= 14;
+        $cs .= $rule( $y, $mx, $pw - $mx );
+        $y -= 14;
 
-		$updates[ $pages_num ] = "{$pages_num} 0 obj\n"
-			. trim( $new_pages_body ) . "\nendobj\n";
+        $col2_x = $mx + 160; // label column width
 
-		error_log( 'CF7W append_audit_page: page=' . $page_num
-			. ' cs=' . $cs_num
-			. ' pages_obj=' . $pages_num
-			. ' lines=' . count( $lines ) );
+        $details = array(
+            'Document Name'  => $doc_name,
+            'Pages Signed'   => $page_count > 0 ? $page_count . ' page(s)' : 'Unknown',
+            'Log ID'         => '#' . $log_id,
+            'Signed At'      => $timestamp,
+            'IP Address'     => $ip_address,
+        );
+        foreach ( $details as $label => $value ) {
+            $cs .= $line( $mx,      $y, '2', 9, $safe( $label ) . ':' );
+            $cs .= $line( $col2_x,  $y, '1', 9, $safe( $value ) );
+            $y -= 14;
+        }
+        $y -= 6;
 
-		return self::apply_incremental( $pdf, $updates );
-	}
+        // ── Signer information ─────────────────────────────────────────────────
+        $cs .= $line( $mx, $y, '2', 11, 'Signer Information' );
+        $y -= 14;
+        $cs .= $rule( $y, $mx, $pw - $mx );
+        $y -= 14;
+
+        foreach ( $form_data as $label => $value ) {
+            if ( $value === '' ) continue;
+            // Skip internal fields and very long values
+            if ( strlen( $value ) > 200 ) continue;
+            $cs .= $line( $mx,     $y, '2', 9, $safe( $label ) . ':' );
+            $cs .= $line( $col2_x, $y, '1', 9, $safe( $value ) );
+            $y -= 13;
+            if ( $y < 180 ) break; // leave room for signature and hash
+        }
+        $y -= 8;
+
+        // ── Document hash ──────────────────────────────────────────────────────
+        $cs .= $line( $mx, $y, '2', 11, 'Document Integrity' );
+        $y -= 14;
+        $cs .= $rule( $y, $mx, $pw - $mx );
+        $y -= 14;
+
+        $cs .= $line( $mx, $y, '2', 9, 'SHA-256 Hash:' );
+        $y -= 13;
+
+        // Hash in monospace — split into two lines if needed (64 chars)
+        if ( $doc_hash ) {
+            $half = (int) ceil( strlen( $doc_hash ) / 2 );
+            $cs  .= $line( $mx, $y, '3', 8, substr( $doc_hash, 0, $half ) );
+            $y   -= 12;
+            $cs  .= $line( $mx, $y, '3', 8, substr( $doc_hash, $half ) );
+            $y   -= 12;
+        }
+
+        $cs .= $line( $mx, $y, '1', 8,
+            'This hash uniquely identifies the signed document. '
+            . 'Any modification changes the hash.'
+        );
+        $y -= 13;
+
+        if ( $verify_url ) {
+            $cs .= $line( $mx, $y, '2', 9, 'Verify at:' );
+            $y  -= 12;
+            $cs .= $line( $mx, $y, '1', 8, $safe( $verify_url ) );
+            $y  -= 16;
+        }
+
+        // ── Signature section ──────────────────────────────────────────────────
+        $y -= 4;
+        $cs .= $line( $mx, $y, '2', 11, 'Electronic Signature' );
+        $y -= 14;
+        $cs .= $rule( $y, $mx, $pw - $mx );
+        $y -= 6;
+
+        $sig_img_obj_num = null;
+        $sig_w_pts = 200.0; $sig_h_pts = 60.0;
+
+        if ( $sig_path && self::fs()->exists( $sig_path )
+          && function_exists( 'imagecreatefrompng' ) ) {
+            $im = @imagecreatefrompng( $sig_path );
+            if ( $im ) {
+                $iw = imagesx( $im ); $ih = imagesy( $im );
+                // Flatten transparency onto white
+                $flat  = imagecreatetruecolor( $iw, $ih );
+                $white = imagecolorallocate( $flat, 255, 255, 255 );
+                imagefill( $flat, 0, 0, $white );
+                imagecopy( $flat, $im, 0, 0, 0, 0, $iw, $ih );
+                imagedestroy( $im );
+                $jpeg = self::image_to_jpeg( $flat );
+                imagedestroy( $flat );
+
+                if ( $jpeg ) {
+                    // Scale to fit within sig box
+                    $scale     = min( $sig_w_pts / $iw, $sig_h_pts / $ih );
+                    $sig_w_pts = round( $iw * $scale, 2 );
+                    $sig_h_pts = round( $ih * $scale, 2 );
+
+                    $jpeg_len        = strlen( $jpeg );
+                    $sig_img_obj_num = $obj++;
+                    $objects[ $sig_img_obj_num ] =
+                        "{$sig_img_obj_num} 0 obj\n"
+                        . "<</Type /XObject /Subtype /Image"
+                        . " /Width {$iw} /Height {$ih}"
+                        . " /ColorSpace /DeviceRGB /BitsPerComponent 8"
+                        . " /Filter /DCTDecode /Length {$jpeg_len}>>\n"
+                        . "stream\n{$jpeg}\nendstream\nendobj\n";
+                }
+            }
+        }
+
+        // Draw signature box outline
+        $sig_box_y = $y - $sig_h_pts - 10;
+        $cs .= "ET\n";
+        $cs .= "0.9 0.9 0.9 rg {$mx} {$sig_box_y} {$sig_w_pts} {$sig_h_pts} re f\n";
+        $cs .= "0.7 0.7 0.7 RG 0.5 w {$mx} {$sig_box_y} {$sig_w_pts} {$sig_h_pts} re S\n";
+        $cs .= "0 0 0 rg\n";
+
+        // Stamp signature image if we have one
+        if ( $sig_img_obj_num !== null ) {
+            $sig_y = $sig_box_y;
+            $cs   .= "q {$sig_w_pts} 0 0 {$sig_h_pts} {$mx} {$sig_y} cm /CertSig Do Q\n";
+            // Add XObject to resources
+            $resources = "<</Font<</F1 {$obj_freg} 0 R /F2 {$obj_fbold} 0 R /F3 {$obj_fmono} 0 R>>"
+                       . "/XObject<</CertSig {$sig_img_obj_num} 0 R>>>>";
+        }
+
+        $cs .= "BT\n";
+        $y   = $sig_box_y - 12;
+        $cs .= $line( $mx, $y, '1', 8,
+            'Signed electronically on ' . $safe( $timestamp )
+            . ' from IP ' . $safe( $ip_address )
+        );
+        $y -= 10;
+
+        $cs .= "ET\n";
+
+        // ── Footer ─────────────────────────────────────────────────────────────
+        $cs .= "0.7 0.7 0.7 rg\n";
+        $cs .= "{$mx} 30 " . ($pw - $mx * 2) . " 0.5 re f\n";
+        $cs .= "0.5 0.5 0.5 rg\nBT\n";
+        $cs .= $line( $mx, 20, '1', 8,
+            $safe( $site_name ) . ' — Certificate of Completion — Log ID #' . $log_id
+        );
+        $right_x = $pw - $mx - 100;
+        $cs .= $line( $right_x, 20, '1', 8, 'Page 1 of 1' );
+        $cs .= "ET\n";
+
+        // ── Assemble PDF ───────────────────────────────────────────────────────
+        // Content stream object
+        $obj_cs = $obj++;
+        $objects[ $obj_cs ] = "{$obj_cs} 0 obj\n"
+            . "<</Length " . strlen( $cs ) . ">>\n"
+            . "stream\n{$cs}endstream\nendobj\n";
+
+        // Page object
+        $obj_page = $obj++;
+        $objects[ $obj_page ] = "{$obj_page} 0 obj\n"
+            . "<</Type /Page /Parent 2 0 R"
+            . " /MediaBox [0 0 {$pw} {$ph}]"
+            . " /Contents {$obj_cs} 0 R"
+            . " /Resources {$resources}"
+            . ">>\nendobj\n";
+
+        // Pages object (object 2 — referenced by page /Parent)
+        $objects[2] = "2 0 obj\n"
+            . "<</Type /Pages /Kids [{$obj_page} 0 R] /Count 1>>\n"
+            . "endobj\n";
+
+        // Catalog (object 1)
+        $objects[1] = "1 0 obj\n"
+            . "<</Type /Catalog /Pages 2 0 R>>\n"
+            . "endobj\n";
+
+        // ── Write PDF byte stream ──────────────────────────────────────────────
+        $out  = "%PDF-1.4\n";
+        $out .= "%\xe2\xe3\xcf\xd3\n"; // binary comment to mark as binary file
+
+        $xref_offsets = array();
+        // Write objects in order 1..N
+        $all_obj_nums = array_keys( $objects );
+        sort( $all_obj_nums, SORT_NUMERIC );
+
+        foreach ( $all_obj_nums as $n ) {
+            $xref_offsets[ $n ] = strlen( $out );
+            $out .= $objects[ $n ];
+        }
+
+        $xref_pos = strlen( $out );
+        $n_objs   = max( $all_obj_nums ) + 1;
+
+        $out .= "xref\n";
+        $out .= "0 {$n_objs}\n";
+        $out .= "0000000000 65535 f\r\n"; // object 0
+
+        for ( $i = 1; $i < $n_objs; $i++ ) {
+            if ( isset( $xref_offsets[ $i ] ) ) {
+                $out .= sprintf( "%010d 00000 n\r\n", $xref_offsets[ $i ] );
+            } else {
+                $out .= "0000000000 65535 f\r\n";
+            }
+        }
+
+        $out .= "trailer\n<</Size {$n_objs} /Root 1 0 R>>\n";
+        $out .= "startxref\n{$xref_pos}\n%%EOF\n";
+
+        return $out;
+    }
+
+    // Helper: wrap an object body string as a numbered PDF object
+    private static function pdf_obj( int $num, string $body ): string {
+        return "{$num} 0 obj\n{$body}\nendobj\n";
+    }
 }

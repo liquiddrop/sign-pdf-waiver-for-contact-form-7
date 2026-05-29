@@ -10,11 +10,30 @@ class CF7W_Admin {
         add_action( 'admin_enqueue_scripts',   array( __CLASS__, 'enqueue_assets' ) );
         add_action( 'wp_ajax_cf7w_get_cf7_fields',    array( __CLASS__, 'ajax_get_cf7_fields' ) );
         add_action( 'wp_ajax_cf7w_get_pdf_info',       array( __CLASS__, 'ajax_get_pdf_info' ) );
-        add_action( 'wp_ajax_cf7w_delete_submissions', array( __CLASS__, 'ajax_delete_submissions' ) );
-		if ( function_exists( 'cf7w_fs' ) && cf7w_fs()->can_use_premium_code__premium_only() ) {
+        add_action( 'wp_ajax_cf7w_delete_submission', array( __CLASS__, 'ajax_delete_submission' ) );
+		if ( cf7w_fs()->can_use_premium_code__premium_only() ) {
 			add_action( 'admin_post_cf7w_bulk_export', array( 'CF7W_Premium', 'handle_bulk_export' ) );
-			add_action( 'admin_notices', array( __CLASS__, 'notice_verify_page' ) );
+			add_action( 'wp_ajax_cf7w_batch_delete_submissions', array( 'CF7W_Premium', 'ajax_batch_delete_submissions' ) );
+			add_action( 'admin_notices', array( 'CF7W_Premium', 'notice_verify_page' ) );
 		} // @endif can_use_premium_code__premium_only
+    }
+	
+	/**
+     * Convert an absolute filesystem path under the uploads directory
+     * to its public URL. Uses wp_upload_dir() so it works regardless
+     * of how WP_CONTENT_DIR or content_url() are configured.
+     *
+     * Returns empty string if the path is not under the uploads directory.
+     */
+    private static function path_to_url( string $abs_path ): string {
+        if ( ! $abs_path ) return '';
+        $upload_dir = wp_upload_dir();
+        $basedir    = untrailingslashit( $upload_dir['basedir'] );
+        $baseurl    = untrailingslashit( $upload_dir['baseurl'] );
+        if ( strpos( $abs_path, $basedir ) === 0 ) {
+            return $baseurl . substr( $abs_path, strlen( $basedir ) );
+        }
+        return '';
     }
 
     // ── Menu ──────────────────────────────────────────────────────────────────
@@ -54,6 +73,7 @@ class CF7W_Admin {
         $pdf_id   = $settings['pdf_attach_id'] ?? 0;
         $notify   = $settings['notify_email']  ?? get_option( 'admin_email' );
         $attach_pdf = ! empty( $settings['attach_pdf'] );
+		$add_audit = ! empty( $settings['add_audit'] );
         $sig_page = $settings['sig_page']      ?? 1;
         $sig_x    = $settings['sig_x']         ?? 50;
         $sig_y    = $settings['sig_y']         ?? 80;
@@ -182,7 +202,7 @@ $vp_placements = $settings['visual_placements'] ?? array();
 
 <!-- Step 3 – PDF Filename, Storage-->
 <div class="cf7w-admin-section">
-  <h3><?php esc_html_e( 'Step 3 – PDF Filename, Storage &amp; Delivery', 'sign-pdf-waiver-for-contact-form-7' ); ?></h3>
+  <h3><?php esc_html_e( 'Step 3 – PDF Filename &amp; Storage', 'sign-pdf-waiver-for-contact-form-7' ); ?></h3>
 
   <p class="description">
     <?php esc_html_e( 'Pattern for the saved PDF filename. Use {PDF Field Name} tokens to include field values. Built-in: {date}, {time}, {form_id}.', 'sign-pdf-waiver-for-contact-form-7' ); ?><br>
@@ -194,12 +214,6 @@ $vp_placements = $settings['visual_placements'] ?? array();
          placeholder="form_{form_id}_{date}">
 
   <br><br><strong><?php esc_html_e( 'Storage', 'sign-pdf-waiver-for-contact-form-7' ); ?></strong><br><br>
-  <label>
-    <input type="checkbox" name="cf7w_save_pdf" id="cf7w_save_pdf" value="1" <?php checked( $save_pdf ); ?>>
-    <?php esc_html_e( 'Save filled PDF to server after sending', 'sign-pdf-waiver-for-contact-form-7' ); ?>
-  </label>
-  <p class="description" style="margin-top:4px;"><?php esc_html_e( 'When unchecked, the filled PDF is deleted from the server immediately after emails are sent. The PDF will only exist if it is attached to an outgoing email.', 'sign-pdf-waiver-for-contact-form-7' ); ?></p>
-
   <br>
   <label>
     <input type="checkbox" name="cf7w_save_signature" id="cf7w_save_signature" value="1" <?php checked( $save_signature ); ?>>
@@ -207,23 +221,22 @@ $vp_placements = $settings['visual_placements'] ?? array();
   </label>
   <p class="description" style="margin-top:4px;"><?php esc_html_e( 'When unchecked, the signature PNG is deleted from the server after the PDF has been generated.', 'sign-pdf-waiver-for-contact-form-7' ); ?></p>
 
-  <p class="description" style="margin-top:12px;">
-    <strong><?php esc_html_e( 'Note:', 'sign-pdf-waiver-for-contact-form-7' ); ?></strong>
-    <?php esc_html_e( 'If neither &quot;Save filled PDF&quot; nor &quot;Attach PDF to email&quot; are enabled, no record of the filled PDF will be kept.', 'sign-pdf-waiver-for-contact-form-7' ); ?>
-  </p>
-
 </div>
 
-<!-- Step 4 – Delivery -->
+<!-- Step 4 – Premium -->
 <div class="cf7w-admin-section">
-  <h3><?php esc_html_e( 'Step 4 – Delivery', 'cf7-waiver' ); ?></h3>
+  <h3><?php esc_html_e( 'Step 4 – Premium', 'sign-pdf-waiver-for-contact-form-7' ); ?></h3>
 
-  <?php if ( function_exists( 'cf7w_fs' ) && cf7w_fs()->can_use_premium_code__premium_only() ) : ?>
-
+  <?php if ( cf7w_fs()->can_use_premium_code__premium_only() ) : ?>
+    
+	<?php $create_url = admin_url(
+        'post-new.php?post_type=page&post_title=Verify+PDF&content=[cf7w_verify]'
+    ); ?>
+	
     <table class="form-table" role="presentation">
       <tr>
         <th scope="row" style="width:200px;">
-          <?php esc_html_e( 'Email Attachment', 'cf7-waiver' ); ?>
+          <?php esc_html_e( 'Email PDF Attachment', 'sign-pdf-waiver-for-contact-form-7' ); ?>
           <span style="background:#f0b849;color:#000;font-size:10px;font-weight:700;
                        padding:1px 5px;border-radius:3px;margin-left:4px;">
             ⭐ PREMIUM
@@ -233,42 +246,68 @@ $vp_placements = $settings['visual_placements'] ?? array();
           <label>
             <input type="checkbox" name="cf7w_attach_pdf" value="1"
                    <?php checked( $attach_pdf ); ?>>
-            <?php esc_html_e( 'Attach filled PDF to CF7\'s outgoing emails', 'cf7-waiver' ); ?>
+            <?php esc_html_e( 'Attach filled PDF to Contact Forms\'s outgoing emails', 'sign-pdf-waiver-for-contact-form-7' ); ?>
           </label>
           <p class="description">
-            <?php esc_html_e( 'Attaches the completed PDF to the admin notification and submitter confirmation emails configured in the Mail tab.', 'cf7-waiver' ); ?>
+            <?php esc_html_e( 'Attaches the completed PDF to the admin notification and submitter confirmation emails configured in the Mail tab.', 'sign-pdf-waiver-for-contact-form-7' ); ?>
+          </p>
+        </td>
+      </tr>
+	  <tr>
+        <th scope="row" style="width:220px;">
+          <?php esc_html_e( 'Save filled PDF', 'sign-pdf-waiver-for-contact-form-7' ); ?>
+        </th>
+        <td>
+          <label>
+            <input type="checkbox" name="cf7w_save_pdf" value="1"
+                   <?php checked( $settings['save_pdf'] ?? true ); ?>>
+            <?php esc_html_e( 'Save filled PDF to server storage', 'sign-pdf-waiver-for-contact-form-7' ); ?>
+          </label>
+          <p class="description">
+            <?php esc_html_e( 'When unchecked, the filled pdf is deleted from the server immediately after emails are sent. The database record will still exist', 'sign-pdf-waiver-for-contact-form-7' ); ?>
+			<p class="description" style="margin-top:12px;">
+			  <strong><?php esc_html_e( 'Note:', 'sign-pdf-waiver-for-contact-form-7' ); ?></strong>
+			  <?php esc_html_e( 'If neither &quot;Save filled PDF&quot; nor &quot;Attach PDF to email&quot; are enabled, no record of the filled PDF will be kept.', 'sign-pdf-waiver-for-contact-form-7' ); ?>
+		    </p>
           </p>
         </td>
       </tr>
       <tr>
         <th scope="row">
-          <?php esc_html_e( 'External Storage', 'cf7-waiver' ); ?>
+          <?php esc_html_e( 'Email Certificate PDF attachment', 'sign-pdf-waiver-for-contact-form-7' ); ?>
           <span style="background:#f0b849;color:#000;font-size:10px;font-weight:700;
                        padding:1px 5px;border-radius:3px;margin-left:4px;">
             ⭐ PREMIUM
           </span>
         </th>
         <td>
-          <select name="cf7w_external_storage">
-            <option value="" <?php selected( $settings['external_storage'] ?? '', '' ); ?>>
-              <?php esc_html_e( 'Local disk only', 'cf7-waiver' ); ?>
-            </option>
-            <option value="google_drive"
-                    <?php selected( $settings['external_storage'] ?? '', 'google_drive' ); ?>>
-              <?php esc_html_e( 'Google Drive', 'cf7-waiver' ); ?>
-            </option>
-            <option value="dropbox"
-                    <?php selected( $settings['external_storage'] ?? '', 'dropbox' ); ?>>
-              <?php esc_html_e( 'Dropbox', 'cf7-waiver' ); ?>
-            </option>
-          </select>
-          <?php if ( ! empty( $settings['external_storage'] ) ) : ?>
-            <p class="description">
-              <?php esc_html_e( 'Configure credentials under Contact → CF7 PDF Waiver Settings.', 'cf7-waiver' ); ?>
-            </p>
-          <?php endif; ?>
+		  <label>
+            <input type="checkbox" name="cf7w_add_audit" value="1"
+                   <?php checked( $add_audit ); ?>>
+            <?php esc_html_e( 'Attach certificate of completion PDF to Contact Forms\'s outgoing emails', 'sign-pdf-waiver-for-contact-form-7' ); ?>
+          </label>
+          <p class="description">
+            <?php esc_html_e( 'Attaches a certificate of completion PDF to the admin notification and submitter confirmation emails configured in the Mail tab.', 'sign-pdf-waiver-for-contact-form-7' ); ?>
+          </p>
+		  <p class="description" style="margin-top:12px;">
+			  <strong><?php esc_html_e( 'Note:', 'sign-pdf-waiver-for-contact-form-7' ); ?></strong>
+			  <?php esc_html_e( 'A certificate of completion is always generated and saved to the database', 'sign-pdf-waiver-for-contact-form-7' ); ?>
+		    </p>
         </td>
       </tr>
+      <tr>
+		<p class="description" style="margin-top:12px;">
+            <strong><?php esc_html_e( 'Verification page where users can upload the signed pdf and verify it hasn\'t changed.', 'sign-pdf-waiver-for-contact-form-7' ); ?></strong>
+            &nbsp;
+            <a href="<?php echo esc_url( $create_url ); ?>" class="button button-small">
+                <?php esc_html_e( 'Create Verification Page', 'sign-pdf-waiver-for-contact-form-7' ); ?>
+            </a>
+            &nbsp;
+            <em style="font-size:12px;color:#666;">
+                <?php esc_html_e( 'Add [cf7w_verify] to any page manually if you prefer.', 'sign-pdf-waiver-for-contact-form-7' ); ?>
+            </em>
+        </p>
+      </tr>	  
     </table>
 
   <?php else : // @else can_use_premium_code__premium_only ?>
@@ -276,21 +315,21 @@ $vp_placements = $settings['visual_placements'] ?? array();
     <div style="background:#f0f6fc;border:1px solid #c3d9ed;border-radius:4px;
                 padding:16px 18px;line-height:1.6;">
       <p style="margin:0 0 10px;font-size:13px;font-weight:700;">
-        ⭐ <?php esc_html_e( 'Premium Delivery Features', 'cf7-waiver' ); ?>
+        ⭐ <?php esc_html_e( 'Premium Delivery Features', 'sign-pdf-waiver-for-contact-form-7' ); ?>
       </p>
       <p style="margin:0 0 4px;font-size:13px;">
-        <?php esc_html_e( 'Upgrade to unlock:', 'cf7-waiver' ); ?>
+        <?php esc_html_e( 'Upgrade to unlock:', 'sign-pdf-waiver-for-contact-form-7' ); ?>
       </p>
       <ul style="margin:4px 0 12px;padding-left:20px;font-size:13px;">
-        <li><?php esc_html_e( 'Attach filled PDF to admin and submitter emails', 'cf7-waiver' ); ?></li>
-        <li><?php esc_html_e( 'Send submitters a verification email with document hash and Log ID', 'cf7-waiver' ); ?></li>
-        <li><?php esc_html_e( 'Automatically upload PDFs to Google Drive or Dropbox', 'cf7-waiver' ); ?></li>
-        <li><?php esc_html_e( 'Bulk export submissions as a ZIP archive', 'cf7-waiver' ); ?></li>
+        <li><?php esc_html_e( 'Attach signed PDF to admin and submitter emails', 'sign-pdf-waiver-for-contact-form-7' ); ?></li>
+		<li><?php esc_html_e( 'Tamper-proof pdfs with added verification page shortcode', 'sign-pdf-waiver-for-contact-form-7' ); ?></li>
+		<li><?php esc_html_e( 'Generate court ready Certificate of Completion with audit trail', 'sign-pdf-waiver-for-contact-form-7' ); ?></li>
+		<li><?php esc_html_e( 'Bulk export/delete to fit buisness workflow', 'sign-pdf-waiver-for-contact-form-7' ); ?></li>
       </ul>
       <?php if ( function_exists( 'cf7w_fs' ) ) : ?>
         <a href="<?php echo esc_url( cf7w_fs()->get_upgrade_url() ); ?>"
            class="button button-primary" style="font-size:13px;">
-          <?php esc_html_e( 'Upgrade to Premium', 'cf7-waiver' ); ?>
+          <?php esc_html_e( 'Upgrade to Premium', 'sign-pdf-waiver-for-contact-form-7' ); ?>
         </a>
       <?php endif; ?>
     </div>
@@ -329,6 +368,7 @@ $vp_placements = $settings['visual_placements'] ?? array();
         // can trace sanitization from the $_POST access through to storage.
         $vp_list = array();
         // phpcs:ignore WordPress.Security.NonceVerification.Missing -- nonce verified above via wp_verify_nonce before this point is reached
+		// phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- individual sub-fields are sanitized below during foreach iteration
         $raw_vp_post = isset( $_POST['cf7w_vp'] ) ? (array) wp_unslash( $_POST['cf7w_vp'] ) : array();
         foreach ( $raw_vp_post as $vp_raw_item ) {
             if ( ! is_array( $vp_raw_item ) ) continue;
@@ -348,8 +388,15 @@ $vp_placements = $settings['visual_placements'] ?? array();
         }
 
         $allowed_bg  = array( 'transparent', 'white', 'yellow', 'cyan' );
-        $vp_bg_color = sanitize_key( wp_unslash( $_POST['cf7w_vp_bg_color'] ?? 'transparent' ) );
-        if ( ! in_array( $vp_bg_color, $allowed_bg, true ) ) { $vp_bg_color = 'transparent'; }
+        $vp_bg_color_raw = sanitize_key( wp_unslash( $_POST['cf7w_vp_bg_color'] ?? 'transparent' ) );
+		$vp_bg_color = in_array( $vp_bg_color_raw, $allowed_bg, true )
+			? $vp_bg_color_raw
+			: 'transparent';
+		$allowed_storage = array( '', 'google_drive', 'dropbox' );
+		$external_storage_raw = sanitize_key( wp_unslash( $_POST['cf7w_external_storage'] ?? '' ) );
+		$external_storage = in_array( $external_storage_raw, $allowed_storage, true )
+			? $external_storage_raw
+			: '';
 
         update_post_meta( $post_id, '_cf7w_settings', array(
             'pdf_attach_id'            => absint( wp_unslash( $_POST['cf7w_pdf_attach_id'] ?? 0 ) ),
@@ -357,6 +404,7 @@ $vp_placements = $settings['visual_placements'] ?? array();
             'notify_email'             => sanitize_email( wp_unslash( $_POST['cf7w_notify_email'] ?? '' ) ),
             // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized,WordPress.Security.ValidatedSanitizedInput.MissingUnslash -- checkbox presence check only, no string value extracted
             'attach_pdf'               => ! empty( $_POST['cf7w_attach_pdf'] ),
+			'add_audit'                => ! empty( $_POST['cf7w_add_audit'] ),
             'save_pdf'                 => ! empty( $_POST['cf7w_save_pdf'] ),
             'save_signature'           => ! empty( $_POST['cf7w_save_signature'] ),
             'pdf_filename_scheme'      => sanitize_text_field( wp_unslash( $_POST['cf7w_pdf_filename_scheme'] ?? '' ) ),
@@ -368,61 +416,8 @@ $vp_placements = $settings['visual_placements'] ?? array();
             'vp_iframe_w'              => max( 400, absint( wp_unslash( $_POST['cf7w_vp_iframe_w'] ?? 800 ) ) ),
             'vp_iframe_h'              => max( 400, absint( wp_unslash( $_POST['cf7w_vp_iframe_h'] ?? 1000 ) ) ),
 			// premium settings — saved for all users, only used when licensed
-			'external_storage'         => in_array(
-											$_POST['cf7w_external_storage'] ?? '',
-											array( '', 'google_drive', 'dropbox' )
-										  ) ? ( $_POST['cf7w_external_storage'] ?? '' ) : '',
+			'external_storage'         => $external_storage,
         ) );
-    }
-
-    // ── AJAX: delete submissions ──────────────────────────────────────────────
-    public static function ajax_delete_submissions(): void {
-        check_ajax_referer( 'cf7w_delete_submissions', 'nonce' );
-        if ( ! current_user_can( 'manage_options' ) ) wp_send_json_error( array( 'message' => 'Forbidden' ) );
-
-        $raw_ids = isset( $_POST['ids'] ) ? array_map( 'sanitize_text_field', wp_unslash( (array) $_POST['ids'] ) ) : array();
-        $ids     = array_map( 'absint', $raw_ids );
-        $ids     = array_filter( $ids ); // remove zeros
-
-        if ( empty( $ids ) ) {
-            wp_send_json_error( array( 'message' => 'No IDs provided' ) );
-        }
-
-        global $wpdb;
-        $deleted = 0;
-
-        foreach ( $ids as $id ) {
-            // Load the row so we can clean up associated files.
-            // Table name comes from $wpdb->prefix via cf7w_db_table() — not user input.
-            $fetch_table = esc_sql( cf7w_db_table() );
-            // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- $fetch_table is esc_sql() sanitised; pre-delete fetch must be fresh
-            $row = $wpdb->get_row( $wpdb->prepare( "SELECT filled_pdf, signature FROM {$fetch_table} WHERE id = %d", $id ) );
-
-            if ( ! $row ) continue;
-
-            // Delete the filled PDF file if it exists.
-            if ( ! empty( $row->filled_pdf ) && file_exists( $row->filled_pdf ) ) {
-                cf7w_delete_file( $row->filled_pdf );
-            }
-
-            // Delete the signature PNG file if it exists.
-            // The signature column stores the file path (not base64) for rows
-            // saved after this version. Only unlink if it looks like a file path.
-            if ( ! empty( $row->signature )
-                && strpos( $row->signature, 'data:' ) === false
-                && file_exists( $row->signature ) ) {
-                cf7w_delete_file( $row->signature );
-            }
-
-            // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- delete operation; cache is flushed immediately after the loop via wp_cache_flush_group
-            $result = $wpdb->delete( cf7w_db_table(), array( 'id' => $id ), array( '%d' ) );
-            if ( $result ) $deleted++;
-        }
-
-        // Invalidate the submissions list cache so the next page load is fresh.
-        wp_cache_flush_group( 'cf7w_submissions' );
-
-        wp_send_json_success( array( 'deleted' => $deleted ) );
     }
 
     // ── AJAX: get PDF page info (page count + dimensions for visual placement) ─
@@ -439,6 +434,45 @@ $vp_placements = $settings['visual_placements'] ?? array();
         // Parse page count and dimensions from PDF binary
         $pages = self::pdf_get_page_info( $file_path );
         wp_send_json_success( array( 'pages' => $pages ) );
+    }
+	
+	// delete a submission from the database and get rid of the pdf
+	public static function ajax_delete_submission(): void {
+        check_ajax_referer( 'cf7w_admin_nonce', 'nonce' );
+        if ( ! current_user_can( 'manage_options' ) ) {
+            wp_send_json_error( array( 'message' => 'Access denied.' ) );
+        }
+
+        $id = absint( $_POST['id'] ?? 0 );
+        if ( ! $id ) {
+            wp_send_json_error( array( 'message' => 'Invalid submission ID.' ) );
+        }
+
+        global $wpdb;
+
+        // Get the filled PDF path before deleting the row so we can remove the file
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching
+		$row = $wpdb->get_row(
+			$wpdb->prepare( 'SELECT filled_pdf FROM %i WHERE id = %d LIMIT 1', cf7w_db_table(), $id )
+		);
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching
+		$deleted = $wpdb->delete(
+			cf7w_db_table(),
+			array( 'id' => $id ),
+			array( '%d' )
+		);
+
+        if ( ! $deleted ) {
+            wp_send_json_error( array( 'message' => 'Submission not found.' ) );
+        }
+
+        // Delete the filled PDF file from disk if it exists
+        if ( $row && ! empty( $row->filled_pdf ) ) {
+			cf7w_delete_file( $row->filled_pdf );
+		}
+
+        wp_send_json_success( array( 'message' => 'Submission deleted.' ) );
     }
 
     /**
@@ -534,11 +568,17 @@ $vp_placements = $settings['visual_placements'] ?? array();
         global $wpdb;
         $table = cf7w_db_table();
 
-        // Verify nonce if the search form was submitted; skip on first page load
-        // (no nonce present means a fresh unfiltered load, which is safe).
-        if ( isset( $_GET['cf7w_search_nonce'] ) ) {
-            wp_verify_nonce( sanitize_text_field( wp_unslash( $_GET['cf7w_search_nonce'] ) ), 'cf7w_submissions_search' );
-        }
+        // Verify nonce if the search form was submitted
+		if ( isset( $_GET['cf7w_search_nonce'] ) ) {
+			if ( ! wp_verify_nonce(
+				sanitize_text_field( wp_unslash( $_GET['cf7w_search_nonce'] ) ),
+				'cf7w_submissions_search'
+			) ) {
+				// Nonce invalid — ignore all filter parameters and show unfiltered list
+				$search  = '';
+				$form_id = 0;
+			}
+		}
 
         $search  = sanitize_text_field( wp_unslash( $_GET['s']       ?? '' ) );
         $form_id = absint( wp_unslash( $_GET['form_id']              ?? 0 ) );
@@ -567,37 +607,25 @@ $vp_placements = $settings['visual_placements'] ?? array();
             $rows     = $cached['rows'];
             $form_ids = $cached['form_ids'];
         } else {
-            // Build each query concretely so static analysis can verify every
-            // placeholder matches its argument count with no dynamic fragments.
-            $t = esc_sql( $table ); // trusted: $wpdb->prefix only, never user input
+			// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- NoCaching satisfied by wp_cache_set below; DirectQuery intentional
+			if ( $form_id && $search ) {
+				$like  = '%' . $wpdb->esc_like( $search ) . '%';
+				$total = (int) $wpdb->get_var( $wpdb->prepare( 'SELECT COUNT(*) FROM %i WHERE form_id = %d AND (form_data LIKE %s OR ip_address LIKE %s)', cf7w_db_table(), $form_id, $like, $like ) );
+				$rows  = $wpdb->get_results( $wpdb->prepare( 'SELECT * FROM %i WHERE form_id = %d AND (form_data LIKE %s OR ip_address LIKE %s) ORDER BY entry_date DESC LIMIT %d OFFSET %d', cf7w_db_table(), $form_id, $like, $like, $per, $offset ) );
+			} elseif ( $form_id ) {
+				$total = (int) $wpdb->get_var( $wpdb->prepare( 'SELECT COUNT(*) FROM %i WHERE form_id = %d', cf7w_db_table(), $form_id ) );
+				$rows  = $wpdb->get_results( $wpdb->prepare( 'SELECT * FROM %i WHERE form_id = %d ORDER BY entry_date DESC LIMIT %d OFFSET %d', cf7w_db_table(), $form_id, $per, $offset ) );
+			} elseif ( $search ) {
+				$like  = '%' . $wpdb->esc_like( $search ) . '%';
+				$total = (int) $wpdb->get_var( $wpdb->prepare( 'SELECT COUNT(*) FROM %i WHERE form_data LIKE %s OR ip_address LIKE %s', cf7w_db_table(), $like, $like ) );
+				$rows  = $wpdb->get_results( $wpdb->prepare( 'SELECT * FROM %i WHERE form_data LIKE %s OR ip_address LIKE %s ORDER BY entry_date DESC LIMIT %d OFFSET %d', cf7w_db_table(), $like, $like, $per, $offset ) );
+			} else {
+				$total = (int) $wpdb->get_var( $wpdb->prepare( 'SELECT COUNT(*) FROM %i', cf7w_db_table() ) );
+				$rows  = $wpdb->get_results( $wpdb->prepare( 'SELECT * FROM %i ORDER BY entry_date DESC LIMIT %d OFFSET %d', cf7w_db_table(), $per, $offset ) );
+			}
 
-            // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- NoCaching satisfied by wp_cache_set below; DirectQuery intentional
-            if ( $form_id && $search ) {
-                $like   = '%' . $wpdb->esc_like( $search ) . '%';
-                // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- $t is esc_sql() on $wpdb->prefix
-                $total = (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*) FROM {$t} WHERE form_id = %d AND (form_data LIKE %s OR ip_address LIKE %s)", $form_id, $like, $like ) );
-                // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
-                $rows  = $wpdb->get_results( $wpdb->prepare( "SELECT * FROM {$t} WHERE form_id = %d AND (form_data LIKE %s OR ip_address LIKE %s) ORDER BY entry_date DESC LIMIT %d OFFSET %d", $form_id, $like, $like, $per, $offset ) );
-            } elseif ( $form_id ) {
-                // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- $t is esc_sql() on $wpdb->prefix
-                $total = (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*) FROM {$t} WHERE form_id = %d", $form_id ) );
-                // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
-                $rows  = $wpdb->get_results( $wpdb->prepare( "SELECT * FROM {$t} WHERE form_id = %d ORDER BY entry_date DESC LIMIT %d OFFSET %d", $form_id, $per, $offset ) );
-            } elseif ( $search ) {
-                $like   = '%' . $wpdb->esc_like( $search ) . '%';
-                // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- $t is esc_sql() on $wpdb->prefix
-                $total = (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*) FROM {$t} WHERE form_data LIKE %s OR ip_address LIKE %s", $like, $like ) );
-                // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
-                $rows  = $wpdb->get_results( $wpdb->prepare( "SELECT * FROM {$t} WHERE form_data LIKE %s OR ip_address LIKE %s ORDER BY entry_date DESC LIMIT %d OFFSET %d", $like, $like, $per, $offset ) );
-            } else {
-                // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- $t is esc_sql() on $wpdb->prefix
-                $total = (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*) FROM {$t}", array() ) );
-                // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
-                $rows  = $wpdb->get_results( $wpdb->prepare( "SELECT * FROM {$t} ORDER BY entry_date DESC LIMIT %d OFFSET %d", $per, $offset ) );
-            }
-
-            // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- $t is esc_sql() on $wpdb->prefix
-            $form_ids = $wpdb->get_col( $wpdb->prepare( "SELECT DISTINCT form_id FROM {$t} ORDER BY form_id", array() ) );
+			// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- NoCaching satisfied by wp_cache_set below
+			$form_ids = $wpdb->get_col( $wpdb->prepare( 'SELECT DISTINCT form_id FROM %i ORDER BY form_id', cf7w_db_table() ) );
 
             wp_cache_set( $cache_key, array(
                 'total'    => $total,
@@ -613,30 +641,35 @@ $vp_placements = $settings['visual_placements'] ?? array();
     <?php esc_html_e( 'Form Submissions', 'sign-pdf-waiver-for-contact-form-7' ); ?>
     <span style="font-size:13px;font-weight:400;background:#2271b1;color:#fff;border-radius:10px;padding:2px 9px;"><?php echo esc_html( $total ); ?></span>
   </h1>
+   <?php if ( cf7w_fs()->can_use_premium_code__premium_only() ) : ?>
    <?php 
 	$verify_page_url = '';
 	global $wpdb;
+	// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching
 	$verify_page_id = $wpdb->get_var(
-		"SELECT ID FROM {$wpdb->posts}
-		 WHERE post_status = 'publish'
-		 AND post_type = 'page'
-		 AND post_content LIKE '%cf7w_verify%'
-		 LIMIT 1"
+		$wpdb->prepare(
+			'SELECT ID FROM %i WHERE post_status = %s AND post_type = %s AND post_content LIKE %s LIMIT 1',
+			$wpdb->posts,
+			'publish',
+			'page',
+			'%cf7w_verify%'
+		)
 	);
 	if ( $verify_page_id ) {
 		$verify_page_url = get_permalink( $verify_page_id );
 	}
 	if ( $verify_page_url ) : ?>
 	  <p style="margin:4px 0 16px;font-size:13px;color:#50575e;">
-		<?php esc_html_e( 'Verification page:', 'cf7-waiver' ); ?>
+		<?php esc_html_e( 'Verification page:', 'sign-pdf-waiver-for-contact-form-7' ); ?>
 		<a href="<?php echo esc_url( $verify_page_url ); ?>" target="_blank">
 		  <?php echo esc_url( $verify_page_url ); ?>
 		</a>
 		<span style="color:#aaa;margin-left:6px;font-size:11px;">
-		  <?php esc_html_e( '— share this URL with signers who need to verify their document', 'cf7-waiver' ); ?>
+		  <?php esc_html_e( '— share this URL with signers who need to verify their document', 'sign-pdf-waiver-for-contact-form-7' ); ?>
 		</span>
 	  </p>
 	<?php endif;?>
+	<?php endif; // @endif can_use_premium_code__premium_only ?>
 
   <!-- Search bar -->
   <form method="get" style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:14px;">
@@ -665,17 +698,17 @@ $vp_placements = $settings['visual_placements'] ?? array();
 
   <!-- Batch actions bar -->
   <div class="cf7w-batch-actions" style="margin-bottom:12px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
-    <label style="font-size:13px;cursor:pointer;display:flex;align-items:center;gap:6px;">
-      <input type="checkbox" id="cf7w-select-all" style="vertical-align:middle;margin:0;">
-      <?php esc_html_e( 'Select All', 'sign-pdf-waiver-for-contact-form-7' ); ?>
-    </label>
-	<?php if ( function_exists( 'cf7w_fs' ) && cf7w_fs()->can_use_premium_code__premium_only() ) : ?>
+	<?php if ( cf7w_fs()->can_use_premium_code__premium_only() ) : ?>
+	  <label style="font-size:13px;cursor:pointer;display:flex;align-items:center;gap:6px;">
+        <input type="checkbox" id="cf7w-select-all" style="vertical-align:middle;margin:0;">
+        <?php esc_html_e( 'Select All', 'sign-pdf-waiver-for-contact-form-7' ); ?>
+      </label>
 	  <form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" id="cf7w-bulk-form">
 		<?php wp_nonce_field( 'cf7w_bulk_export' ); ?>
 		<input type="hidden" name="action" value="cf7w_bulk_export">
 		<div class="cf7w-batch-actions" style="margin-bottom:12px;display:flex;align-items:center;gap:10px;">
 		  <button type="submit" id="cf7w-batch-download" class="button button-primary" disabled>
-			<?php esc_html_e( 'Export as ZIP', 'cf7-waiver' ); ?>
+			<?php esc_html_e( 'Export as ZIP', 'sign-pdf-waiver-for-contact-form-7' ); ?>
 			(<span id="cf7w-selected-count">0</span>)
 		  </button>
 		  <button type="button" id="cf7w-batch-delete" class="button" style="color:#b32d2e;border-color:#b32d2e;" disabled>
@@ -685,17 +718,17 @@ $vp_placements = $settings['visual_placements'] ?? array();
 		</div>
 	<?php else : // @else can_use_premium_code__premium_only ?>
 	  <div style="margin-bottom:12px;">
-		<span class="button button-primary" style="opacity:0.5;cursor:default;">
-		  <?php esc_html_e( 'Export as ZIP (Premium)', 'cf7-waiver' ); ?>
-		  (<span id="cf7w-selected-count">0</span>)
-		</span>
-		<?php if ( function_exists( 'cf7w_fs' ) ) : ?>
-		  <a href="<?php echo esc_url( cf7w_fs()->get_upgrade_url() ); ?>" style="margin-left:8px;">
-			<?php esc_html_e( 'Upgrade to enable bulk export', 'cf7-waiver' ); ?>
+	    <?php if ( function_exists( 'cf7w_fs' ) ) : ?>
+		  <a href="<?php echo esc_url( cf7w_fs()->get_upgrade_url() ); ?>" style="margin-left:8px;margin-right:8px;">
+			<?php esc_html_e( ' Upgrade to enable bulk export and delete ', 'sign-pdf-waiver-for-contact-form-7' ); ?>
 		  </a>
 		<?php endif; ?>
+		<span class="button button-primary" style="opacity:0.5;cursor:default;">
+		  <?php esc_html_e( 'Export as ZIP (Premium)', 'sign-pdf-waiver-for-contact-form-7' ); ?>
+		  (<span id="cf7w-selected-count">0</span>)
+		</span>
 		<button type="button" id="cf7w-batch-delete" class="button" style="color:#b32d2e;border-color:#b32d2e;" disabled>
-		    <?php esc_html_e( 'Delete Selected', 'sign-pdf-waiver-for-contact-form-7' ); ?>
+		    <?php esc_html_e( ' Delete Selected ', 'sign-pdf-waiver-for-contact-form-7' ); ?>
 			(<span id="cf7w-selected-count">0</span>)
 		</button>
 	  </div>
@@ -705,107 +738,153 @@ $vp_placements = $settings['visual_placements'] ?? array();
 
   <table class="wp-list-table widefat fixed striped cf7w-sub-table">
     <colgroup>
+      <?php if ( cf7w_fs()->can_use_premium_code__premium_only() ) : // @if can_use_premium_code__premium_only ?>
       <col class="col-checkbox">
+      <?php endif; // @endif can_use_premium_code__premium_only ?>
       <col class="col-id">
       <col class="col-form">
       <col class="col-date">
       <col class="col-ip">
       <col><!-- data -->
       <col class="col-pdf">
+      <?php if ( cf7w_fs()->can_use_premium_code__premium_only() ) : // @if can_use_premium_code__premium_only ?>
+      <col class="col-cert">
+      <?php endif; // @endif can_use_premium_code__premium_only ?>
+      <col class="col-actions">
     </colgroup>
     <thead><tr>
+      <?php if ( cf7w_fs()->can_use_premium_code__premium_only() ) : // @if can_use_premium_code__premium_only ?>
       <th class="col-checkbox">
-        <input type="checkbox" class="cf7w-select-all-header" title="<?php esc_attr_e( 'Select All', 'sign-pdf-waiver-for-contact-form-7' ); ?>">
+        <input type="checkbox" class="cf7w-select-all-header"
+               title="<?php esc_attr_e( 'Select All', 'sign-pdf-waiver-for-contact-form-7' ); ?>">
       </th>
+      <?php endif; // @endif can_use_premium_code__premium_only ?>
       <th class="col-id">#</th>
-      <th class="col-form"><?php esc_html_e( 'Form', 'sign-pdf-waiver-for-contact-form-7' ); ?></th>
-      <th class="col-date"><?php esc_html_e( 'Date', 'sign-pdf-waiver-for-contact-form-7' ); ?></th>
-      <th class="col-ip"><?php esc_html_e( 'IP', 'sign-pdf-waiver-for-contact-form-7' ); ?></th>
-      <th><?php esc_html_e( 'Fields', 'sign-pdf-waiver-for-contact-form-7' ); ?></th>
-      <th class="col-pdf"><?php esc_html_e( 'PDF', 'sign-pdf-waiver-for-contact-form-7' ); ?></th>
+      <th class="col-form"><?php esc_html_e( 'Form',   'sign-pdf-waiver-for-contact-form-7' ); ?></th>
+      <th class="col-date"><?php esc_html_e( 'Date',   'sign-pdf-waiver-for-contact-form-7' ); ?></th>
+      <th class="col-ip"><?php   esc_html_e( 'IP',     'sign-pdf-waiver-for-contact-form-7' ); ?></th>
+      <th><?php                  esc_html_e( 'Fields', 'sign-pdf-waiver-for-contact-form-7' ); ?></th>
+      <th class="col-pdf"><?php  esc_html_e( 'PDF',    'sign-pdf-waiver-for-contact-form-7' ); ?></th>
+      <?php if ( cf7w_fs()->can_use_premium_code__premium_only() ) : // @if can_use_premium_code__premium_only ?>
+      <th class="col-cert"><?php esc_html_e( 'Certificate', 'sign-pdf-waiver-for-contact-form-7' ); ?></th>
+      <?php endif; // @endif can_use_premium_code__premium_only ?>
+      <th class="col-actions"><?php esc_html_e( 'Actions', 'sign-pdf-waiver-for-contact-form-7' ); ?></th>
     </tr></thead>
     <tbody>
     <?php foreach ( $rows as $row ) :
-        $data    = json_decode( $row->form_data, true ) ?: array();
-        $pdf_abs = $row->filled_pdf ?? '';
-        $pdf_url = '';
-        if ( $pdf_abs && file_exists( $pdf_abs ) ) {
-            $rel     = ltrim( str_replace( realpath( CF7W_SECURE_DIR ), '', realpath( $pdf_abs ) ), DIRECTORY_SEPARATOR );
-            $pdf_url = add_query_arg( array(
-                'action' => 'cf7w_serve_file',
-                'file'   => rawurlencode( $rel ),
-                'nonce'  => wp_create_nonce( 'cf7w_serve_file' ),
-            ), admin_url( 'admin-ajax.php' ) );
-        }
-        $hl      = $search ? preg_quote( $search, '/' ) : '';
+        $data     = json_decode( $row->form_data, true ) ?: array();
+        $pdf_abs  = $row->filled_pdf ?? '';
+        $pdf_url  = $pdf_abs ? self::path_to_url( $pdf_abs ) : '';
+        $cert_abs = $row->cert_pdf  ?? '';
+        $cert_url = $cert_abs ? self::path_to_url( $cert_abs ) : '';
+        $hl       = $search ? preg_quote( $search, '/' ) : '';
     ?>
-    <tr data-id="<?php echo (int) $row->id; ?>" data-pdf-url="<?php echo esc_attr( $pdf_url ); ?>">
+    <tr data-id="<?php echo (int) $row->id; ?>"
+        data-pdf-url="<?php echo esc_attr( $pdf_url ); ?>">
+
+      <?php if ( cf7w_fs()->can_use_premium_code__premium_only() ) : // @if can_use_premium_code__premium_only ?>
       <td class="col-checkbox">
-        <input type="checkbox" class="cf7w-row-select" value="<?php echo (int) $row->id; ?>">
+        <input type="checkbox" class="cf7w-row-select"
+               value="<?php echo (int) $row->id; ?>">
       </td>
+      <?php endif; // @endif can_use_premium_code__premium_only ?>
+
       <td class="col-id"><?php echo (int) $row->id; ?></td>
       <td class="col-form"><?php echo esc_html( get_the_title( $row->form_id ) ?: 'Form #' . $row->form_id ); ?></td>
       <td class="col-date"><?php echo esc_html( date_i18n( 'M j Y g:ia', strtotime( $row->entry_date ) ) ); ?></td>
       <td class="col-ip"><code style="font-size:11px;"><?php echo esc_html( $row->ip_address ); ?></code></td>
+
       <td>
         <?php if ( empty( $data ) ) : ?>
           <em style="color:#aaa;"><?php esc_html_e( 'none', 'sign-pdf-waiver-for-contact-form-7' ); ?></em>
-        <?php else : ?>
         <div class="cf7w-sub-fields">
-        <?php foreach ( $data as $lbl => $val ) :
-            $is_long  = mb_strlen( $val ) > 120;
-            $safe_lbl = esc_html( $lbl );
-            $safe_val = esc_html( $val );
-            $safe_short = esc_html( mb_substr( $val, 0, 120 ) ) . '…';
-            if ( $hl ) {
-                $safe_lbl   = preg_replace( '/(' . $hl . ')/i', '<mark>$1</mark>', $safe_lbl );
-                $safe_val   = preg_replace( '/(' . $hl . ')/i', '<mark>$1</mark>', $safe_val );
-                $safe_short = preg_replace( '/(' . $hl . ')/i', '<mark>$1</mark>', $safe_short );
-            }
-        ?>
-          <?php
-          // Only <mark> is allowed — added by the search-highlight preg_replace above.
-          $allowed_hl = array( 'mark' => array() );
-          ?>
-          <div class="cf7w-sub-field">
-            <span class="cf7w-sub-lbl"><?php echo wp_kses( $safe_lbl, $allowed_hl ); ?></span>
-            <span class="cf7w-sub-val">
-              <?php if ( $is_long ) : ?>
-                <span class="cf7w-short"><?php echo wp_kses( $safe_short, $allowed_hl ); ?> <button type="button" class="cf7w-expand-btn">more</button></span>
-                <span class="cf7w-full" style="display:none"><?php echo wp_kses( $safe_val, $allowed_hl ); ?> <button type="button" class="cf7w-collapse-btn">less</button></span>
-              <?php else : ?>
-                <?php echo wp_kses( $safe_val, $allowed_hl ); ?>
-              <?php endif; ?>
-            </span>
-          </div>
-        <?php endforeach; ?>
-        </div>
+		<?php
+		$allowed_kses = array( 'mark' => array() );
+		foreach ( $data as $lbl => $val ) :
+			$is_long    = mb_strlen( $val ) > 120;
+			$safe_lbl   = esc_html( $lbl );
+			$safe_val   = esc_html( $val );
+			$safe_short = esc_html( mb_substr( $val, 0, 120 ) ) . '…';
+			if ( $hl ) {
+				$safe_lbl   = preg_replace( '/(' . $hl . ')/i', '<mark>$1</mark>', $safe_lbl );
+				$safe_val   = preg_replace( '/(' . $hl . ')/i', '<mark>$1</mark>', $safe_val );
+				$safe_short = preg_replace( '/(' . $hl . ')/i', '<mark>$1</mark>', $safe_short );
+			}
+		?>
+		  <div class="cf7w-sub-field">
+			<span class="cf7w-sub-lbl"><?php echo wp_kses( $safe_lbl, $allowed_kses ); ?></span>
+			<span class="cf7w-sub-val">
+			  <?php if ( $is_long ) : ?>
+				<span class="cf7w-short"><?php echo wp_kses( $safe_short, $allowed_kses ); ?>
+				  <button type="button" class="cf7w-expand-btn">more</button>
+				</span>
+				<span class="cf7w-full" style="display:none"><?php echo wp_kses( $safe_val, $allowed_kses ); ?>
+				  <button type="button" class="cf7w-collapse-btn">less</button>
+				</span>
+			  <?php else : ?>
+				<?php echo wp_kses( $safe_val, $allowed_kses ); ?>
+			  <?php endif; ?>
+			</span>
+		  </div>
+		<?php endforeach; ?>
+		</div>
         <?php endif; ?>
       </td>
-	  <td class="col-pdf">
-	  <?php if ( $pdf_url ) : ?>
-		<div style="display:flex;flex-direction:column;gap:4px;align-items:center;">
-		    <a href="<?php echo esc_url( $pdf_url ); ?>" target="_blank"
-		  	   class="cf7w-view-btn" title="<?php esc_attr_e( 'View PDF', 'cf7-waiver' ); ?>">
-			  &#128065; <?php esc_html_e( 'View', 'cf7-waiver' ); ?>
-		    </a>
-		    <a href="<?php echo esc_url( $pdf_url ); ?>" download
-		  	  class="cf7w-dl-btn" title="<?php esc_attr_e( 'Download PDF', 'cf7-waiver' ); ?>">
-		  	  &#8595; <?php esc_html_e( 'Download', 'cf7-waiver' ); ?>
-		    </a>
-		    <?php if ( ! empty( $row->doc_hash ) && $verify_page_url ) : ?>
-		  	  <a href="<?php echo esc_url( add_query_arg( 'log_id', $row->id, $verify_page_url ) ); ?>"
-		  	     target="_blank"
-		  	     style="font-size:10px;color:#50575e;text-decoration:none;"
-		  	     title="<?php esc_attr_e( 'Open verification page for this submission', 'cf7-waiver' ); ?>">
-		  	    &#10003; <?php esc_html_e( 'Verify', 'cf7-waiver' ); ?>
-		  	  </a>
-		    <?php endif; ?>
-		  </div>
-	    <?php else : ?>
-		  <span style="color:#aaa;">&#8212;</span>
-	    <?php endif; ?>
-	  </td>
+
+      <!-- PDF column -->
+      <td class="col-pdf">
+        <?php if ( $pdf_url ) : ?>
+          <div style="display:flex;flex-direction:column;gap:4px;align-items:center;">
+            <a href="<?php echo esc_url( $pdf_url ); ?>" target="_blank"
+               class="cf7w-view-btn"
+               title="<?php esc_attr_e( 'View PDF', 'sign-pdf-waiver-for-contact-form-7' ); ?>">
+              &#128065; <?php esc_html_e( 'View', 'sign-pdf-waiver-for-contact-form-7' ); ?>
+            </a>
+            <a href="<?php echo esc_url( $pdf_url ); ?>" download
+               class="cf7w-dl-btn"
+               title="<?php esc_attr_e( 'Download PDF', 'sign-pdf-waiver-for-contact-form-7' ); ?>">
+              &#8595; <?php esc_html_e( 'Download', 'sign-pdf-waiver-for-contact-form-7' ); ?>
+            </a>
+          </div>
+        <?php else : ?>
+          <span style="color:#aaa;">&#8212;</span>
+        <?php endif; ?>
+      </td>
+
+      <!-- Certificate column — premium only -->
+      <?php if ( cf7w_fs()->can_use_premium_code__premium_only() ) : // @if can_use_premium_code__premium_only ?>
+      <td class="col-cert">
+        <?php if ( $cert_url ) : ?>
+          <div style="display:flex;flex-direction:column;gap:4px;align-items:center;">
+            <a href="<?php echo esc_url( $cert_url ); ?>" target="_blank"
+               class="cf7w-view-btn"
+               title="<?php esc_attr_e( 'View Certificate', 'sign-pdf-waiver-for-contact-form-7' ); ?>">
+              &#128065; <?php esc_html_e( 'View', 'sign-pdf-waiver-for-contact-form-7' ); ?>
+            </a>
+            <a href="<?php echo esc_url( $cert_url ); ?>" download
+               class="cf7w-dl-btn"
+               title="<?php esc_attr_e( 'Download Certificate', 'sign-pdf-waiver-for-contact-form-7' ); ?>">
+              &#8595; <?php esc_html_e( 'Download', 'sign-pdf-waiver-for-contact-form-7' ); ?>
+            </a>
+          </div>
+        <?php else : ?>
+          <span style="color:#aaa;">&#8212;</span>
+        <?php endif; ?>
+      </td>
+      <?php endif; // @endif can_use_premium_code__premium_only ?>
+
+      <!-- Actions column — delete button for all users -->
+      <td class="col-actions">
+        <button type="button"
+                class="cf7w-delete-btn button"
+                data-id="<?php echo (int) $row->id; ?>"
+                style="color:#b32d2e;border-color:#b32d2e;font-size:11px;
+                       padding:2px 8px;white-space:nowrap;"
+                title="<?php esc_attr_e( 'Delete this submission', 'sign-pdf-waiver-for-contact-form-7' ); ?>">
+          &#128465; <?php esc_html_e( 'Delete', 'sign-pdf-waiver-for-contact-form-7' ); ?>
+        </button>
+      </td>
+
     </tr>
     <?php endforeach; ?>
     </tbody>
@@ -828,172 +907,6 @@ $vp_placements = $settings['visual_placements'] ?? array();
   <?php endif; ?>
   <?php endif; ?>
 </div>
-<script>
-(function(){
-  // Expand/collapse long field values
-  document.querySelectorAll('.cf7w-expand-btn').forEach(function(btn){
-    btn.addEventListener('click', function(){
-      var val = btn.closest('.cf7w-sub-val');
-      val.querySelector('.cf7w-short').style.display = 'none';
-      val.querySelector('.cf7w-full').style.display  = '';
-    });
-  });
-  document.querySelectorAll('.cf7w-collapse-btn').forEach(function(btn){
-    btn.addEventListener('click', function(){
-      var val = btn.closest('.cf7w-sub-val');
-      val.querySelector('.cf7w-full').style.display  = 'none';
-      val.querySelector('.cf7w-short').style.display = '';
-    });
-  });
-
-  var selectAllTop    = document.getElementById('cf7w-select-all');
-  var selectAllHeader = document.querySelector('.cf7w-select-all-header');
-  var rowCheckboxes   = document.querySelectorAll('.cf7w-row-select');
-  var selectedCountEl = document.getElementById('cf7w-selected-count');
-  var batchDownloadBtn = document.getElementById('cf7w-batch-download');
-  var batchDeleteBtn   = document.getElementById('cf7w-batch-delete');
-
-  function updateSelectedCount() {
-    var count = document.querySelectorAll('.cf7w-row-select:checked').length;
-    if (selectedCountEl) selectedCountEl.textContent = count;
-    if (batchDownloadBtn) batchDownloadBtn.disabled = count === 0;
-    if (batchDeleteBtn)   batchDeleteBtn.disabled   = count === 0;
-
-    var allChecked  = rowCheckboxes.length > 0 && count === rowCheckboxes.length;
-    var someChecked = count > 0 && count < rowCheckboxes.length;
-    if (selectAllTop)    { selectAllTop.checked = allChecked;    selectAllTop.indeterminate = someChecked; }
-    if (selectAllHeader) { selectAllHeader.checked = allChecked; selectAllHeader.indeterminate = someChecked; }
-  }
-
-  function toggleAll(checked) {
-    rowCheckboxes.forEach(function(cb){ cb.checked = checked; });
-    updateSelectedCount();
-  }
-
-  if (selectAllTop)    selectAllTop.addEventListener('change',    function(){ toggleAll(this.checked); });
-  if (selectAllHeader) selectAllHeader.addEventListener('change', function(){ toggleAll(this.checked); });
-  rowCheckboxes.forEach(function(cb){ cb.addEventListener('change', updateSelectedCount); });
-
-  // ── Batch download ─────────────────────────────────────────────────────────
-  // Collects all selected rows. Rows with no PDF are silently skipped.
-  // Uses a HEAD request to verify the file still exists before triggering the
-  // download — if it fails (404/error) that entry is skipped gracefully.
-  if (batchDownloadBtn) {
-    batchDownloadBtn.addEventListener('click', function() {
-      var checkedBoxes = document.querySelectorAll('.cf7w-row-select:checked');
-      if (checkedBoxes.length === 0) {
-        alert('<?php echo esc_js( __( 'Please select submissions first.', 'cf7-waiver' ) ); ?>');
-        return;
-      }
-
-      <?php if ( function_exists( 'cf7w_fs' ) && cf7w_fs()->can_use_premium_code__premium_only() ) : // @if can_use_premium_code__premium_only ?>
-      var form = document.createElement('form');
-      form.method = 'post';
-      form.action = '<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>';
-      var ids = [];
-      checkedBoxes.forEach(function(cb) { ids.push(cb.value); });
-      var fields = {
-        'action':   'cf7w_bulk_export',
-        '_wpnonce': '<?php echo esc_js( wp_create_nonce( 'cf7w_bulk_export' ) ); ?>',
-      };
-      Object.keys(fields).forEach(function(k) {
-        var inp = document.createElement('input');
-        inp.type = 'hidden'; inp.name = k; inp.value = fields[k];
-        form.appendChild(inp);
-      });
-      ids.forEach(function(id) {
-        var inp = document.createElement('input');
-        inp.type = 'hidden'; inp.name = 'cf7w_ids[]'; inp.value = id;
-        form.appendChild(inp);
-      });
-      document.body.appendChild(form);
-      form.submit();
-      document.body.removeChild(form);
-
-      <?php else : // @else can_use_premium_code__premium_only ?>
-      var selectedPdfs = [];
-      checkedBoxes.forEach(function(cb) {
-        var row = cb.closest('tr');
-        var pdfUrl = row.getAttribute('data-pdf-url');
-        if (pdfUrl) selectedPdfs.push({ id: row.getAttribute('data-id'), url: pdfUrl });
-      });
-      if (selectedPdfs.length === 0) {
-        alert('<?php echo esc_js( __( 'No PDFs available for the selected submissions.', 'cf7-waiver' ) ); ?>');
-        return;
-      }
-      var delay = 0;
-      selectedPdfs.forEach(function(pdf) {
-        setTimeout(function() {
-          var link = document.createElement('a');
-          link.href = pdf.url;
-          link.download = 'submission-' + pdf.id + '.pdf';
-          document.body.appendChild(link);
-          link.click();
-          document.body.removeChild(link);
-        }, delay);
-        delay += 300;
-      });
-      <?php endif; // @endif can_use_premium_code__premium_only ?>
-    });
-  }
-
-  // ── Batch delete ───────────────────────────────────────────────────────────
-  if (batchDeleteBtn) {
-    batchDeleteBtn.addEventListener('click', function() {
-      var ids = [];
-      document.querySelectorAll('.cf7w-row-select:checked').forEach(function(cb) {
-        ids.push(parseInt(cb.value, 10));
-      });
-      if (ids.length === 0) return;
-
-      var msg = '<?php echo esc_js( __( 'Delete', 'sign-pdf-waiver-for-contact-form-7' ) ); ?> ' + ids.length +
-                ' <?php echo esc_js( __( 'entry/entries? This cannot be undone.', 'sign-pdf-waiver-for-contact-form-7' ) ); ?>';
-      if (!confirm(msg)) return;
-
-      batchDeleteBtn.disabled = true;
-      batchDeleteBtn.textContent = '<?php echo esc_js( __( 'Deleting…', 'sign-pdf-waiver-for-contact-form-7' ) ); ?>';
-
-      var formData = new FormData();
-      formData.append('action', 'cf7w_delete_submissions');
-      formData.append('nonce',  '<?php echo esc_js( wp_create_nonce( 'cf7w_delete_submissions' ) ); ?>');
-      ids.forEach(function(id){ formData.append('ids[]', id); });
-
-      fetch('<?php echo esc_js( admin_url( 'admin-ajax.php' ) ); ?>', {
-        method: 'POST',
-        body:   formData
-      })
-      .then(function(r){ return r.json(); })
-      .then(function(data) {
-        if (data.success) {
-          // Remove deleted rows from the DOM
-          ids.forEach(function(id) {
-            var row = document.querySelector('tr[data-id="' + id + '"]');
-            if (row) row.remove();
-          });
-          // Update the total count badge
-          var badge = document.querySelector('.cf7w-submissions-wrap h1 span');
-          if (badge) {
-            var current = parseInt(badge.textContent, 10);
-            badge.textContent = Math.max(0, current - data.data.deleted);
-          }
-          updateSelectedCount();
-        } else {
-          alert('<?php echo esc_js( __( 'Delete failed. Please try again.', 'sign-pdf-waiver-for-contact-form-7' ) ); ?>');
-        }
-        batchDeleteBtn.disabled = false;
-        batchDeleteBtn.textContent = '<?php echo esc_js( __( 'Delete Selected', 'sign-pdf-waiver-for-contact-form-7' ) ); ?>';
-      })
-      .catch(function() {
-        alert('<?php echo esc_js( __( 'Delete failed. Please try again.', 'sign-pdf-waiver-for-contact-form-7' ) ); ?>');
-        batchDeleteBtn.disabled = false;
-        batchDeleteBtn.textContent = '<?php echo esc_js( __( 'Delete Selected', 'sign-pdf-waiver-for-contact-form-7' ) ); ?>';
-      });
-    });
-  }
-
-  updateSelectedCount();
-}());
-</script>
         <?php
     }
 
@@ -1010,9 +923,26 @@ $vp_placements = $settings['visual_placements'] ?? array();
             wp_enqueue_script( 'jquery-ui-sortable' );
 
             // PDF.js bundled locally — assets/vendor/pdfjs/pdf.min.js
-            // Download from: https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js
             wp_enqueue_script( 'pdfjs', CF7W_URL . 'assets/vendor/pdfjs/pdf.min.js', array(), '3.11.174', true );
             wp_enqueue_script( 'cf7w-admin', CF7W_URL . 'assets/js/admin.js', array( 'jquery', 'jquery-ui-sortable', 'pdfjs' ), CF7W_VERSION, true );
+			wp_enqueue_script( 'cf7w-submissions', CF7W_URL . 'assets/js/submissions.js', array( 'jquery' ), CF7W_VERSION, true );
+			wp_localize_script( 'cf7w-submissions', 'CF7W_Admin', array(
+				'ajax_url'              => admin_url( 'admin-ajax.php' ),
+				'admin_post_url'        => admin_url( 'admin-post.php' ),
+				'nonce'                 => wp_create_nonce( 'cf7w_admin_nonce' ),
+				'bulk_export_nonce'     => wp_create_nonce( 'cf7w_bulk_export' ),
+				'is_premium'            => cf7w_fs()->can_use_premium_code__premium_only() ? '1' : '0',
+				'i18n' => array(
+					'confirm_delete_single' => __( 'Delete this submission? This cannot be undone.', 'sign-pdf-waiver-for-contact-form-7' ),
+					'confirm_delete_batch'  => __( 'Delete the selected submissions? This cannot be undone.', 'sign-pdf-waiver-for-contact-form-7' ),
+					'deleting'              => __( 'Deleting…', 'sign-pdf-waiver-for-contact-form-7' ),
+					'delete_label'          => __( 'Delete', 'sign-pdf-waiver-for-contact-form-7' ),
+					'delete_selected_label' => __( 'Delete Selected', 'sign-pdf-waiver-for-contact-form-7' ),
+					'delete_failed'         => __( 'Delete failed.', 'sign-pdf-waiver-for-contact-form-7' ),
+					'network_error'         => __( 'Network error. Please try again.', 'sign-pdf-waiver-for-contact-form-7' ),
+					'select_first'          => __( 'Please select submissions first.', 'sign-pdf-waiver-for-contact-form-7' ),
+				),
+			) );
             wp_localize_script( 'cf7w-admin', 'CF7W_Admin', array(
                 'ajax_url'          => admin_url( 'admin-ajax.php' ),
                 'nonce'             => wp_create_nonce( 'cf7w_admin_nonce' ),
@@ -1029,52 +959,4 @@ $vp_placements = $settings['visual_placements'] ?? array();
         wp_enqueue_style( 'cf7w-admin-style', CF7W_URL . 'assets/css/admin.css', array(), CF7W_VERSION );
     }
 	
-	public static function notice_verify_page(): void {
-		// Only show to admins, only on CF7 screens
-		if ( ! current_user_can( 'manage_options' ) ) return;
-		$screen = get_current_screen();
-		if ( ! $screen || strpos( $screen->id, 'wpcf7' ) === false ) return;
-
-		// Only show if audit trail is enabled on at least one form
-		global $wpdb;
-		$has_audit = $wpdb->get_var(
-			"SELECT COUNT(*) FROM {$wpdb->postmeta}
-			 WHERE meta_key = '_cf7w_settings'
-			 AND meta_value LIKE '%\"audit_trail\";b:1%'"
-		);
-		if ( ! $has_audit ) return;
-
-		// Check if a page with [cf7w_verify] already exists
-		$verify_page = $wpdb->get_var(
-			"SELECT ID FROM {$wpdb->posts}
-			 WHERE post_status = 'publish'
-			 AND post_type = 'page'
-			 AND post_content LIKE '%cf7w_verify%'
-			 LIMIT 1"
-		);
-		if ( $verify_page ) return;
-
-		$create_url = admin_url(
-			'post-new.php?post_type=page&cf7w_prefill=verify'
-		);
-		?>
-		<div class="notice notice-info is-dismissible">
-			<p>
-				<strong><?php esc_html_e( 'CF7 PDF Waiver:', 'cf7-waiver' ); ?></strong>
-				<?php esc_html_e(
-					'You have audit trail enabled. Create a verification page so signers can confirm their document has not been altered.',
-					'cf7-waiver'
-				); ?>
-				&nbsp;
-				<a href="<?php echo esc_url( $create_url ); ?>" class="button button-small">
-					<?php esc_html_e( 'Create Verification Page', 'cf7-waiver' ); ?>
-				</a>
-				&nbsp;
-				<em style="font-size:12px;color:#666;">
-					<?php esc_html_e( 'Add [cf7w_verify] to any page manually if you prefer.', 'cf7-waiver' ); ?>
-				</em>
-			</p>
-		</div>
-		<?php
-	}
 }

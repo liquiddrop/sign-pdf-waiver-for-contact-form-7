@@ -1,9 +1,9 @@
 === Sign PDF Waiver for Contact Form 7===
 Contributors: liquiddrop
 Donate link: http://www.socialgoodanalytics.com/
-Tested up to: 6.9
+Tested up to: 7.0
 Tags: Digital Signature, Signature Field, Signature Contact Form 7, Contact Form 7, PDF Form Waiver Release Disclaimer Filling
-Stable tag: 1.0.0
+Stable tag: 1.0.3
 Requires PHP: 7.4
 License: GPLv2 or later
 License URI: http://www.gnu.org/licenses/gpl-3.0.html
