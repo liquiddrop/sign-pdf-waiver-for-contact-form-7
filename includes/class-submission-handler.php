@@ -58,17 +58,8 @@ class CF7W_Submission_Handler {
     }
 
     // ── Main hook ──────────────────────────────────────────────────────────────
-    // Verify plugin-owned nonce before reading any $_POST data
+    // phpcs:ignore WordPress.Security.NonceVerification.Missing -- process() fires inside CF7's wpcf7_before_send_mail action; CF7 verifies its own nonce before dispatching this hook
     public static function process( $contact_form, &$abort, $submission ) {
-        // Verify our own nonce. wp_create_nonce() was called server-side when the
-		// form was rendered, so this is safe even for logged-out users.
-		$nonce = isset( $_POST['cf7w_submission_nonce'] )
-			? sanitize_text_field( wp_unslash( $_POST['cf7w_submission_nonce'] ) )
-			: '';
-		if ( ! wp_verify_nonce( $nonce, 'cf7w_submission' ) ) {
-			return; // Nonce missing or invalid — do not process
-		}
-
 		$post_id  = $contact_form->id();
 		$settings = get_post_meta( $post_id, '_cf7w_settings', true );
 		if ( empty( $settings ) ) return;

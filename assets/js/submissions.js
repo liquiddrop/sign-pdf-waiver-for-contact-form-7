@@ -1,3 +1,4 @@
+(function(){
   // ── Expand / collapse long field values ─────────────────────────────────────
   document.querySelectorAll('.cf7w-expand-btn').forEach(function(btn){
     btn.addEventListener('click', function(){
@@ -20,7 +21,7 @@
       var id  = btn.getAttribute('data-id');
       var row = btn.closest('tr');
 
-      if ( ! confirm( CF7W_Admin.i18n.confirm_delete_single ) ); ?>') ) {
+      if ( ! confirm( CF7W_Admin.i18n.confirm_delete_single ) ) {
         return;
       }
 
@@ -53,6 +54,8 @@
           alert( CF7W_Admin.i18n.network_error );
         });
     });
+  });
+
 
   if ( CF7W_Admin.is_premium ) {
   // ── [PREMIUM] Batch select + ZIP export ─────────────────────────────────────
@@ -112,7 +115,7 @@
 
     var form = document.createElement('form');
     form.method = 'post';
-    form.action = '<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>';
+    form.action = CF7W_Admin.admin_post_url;
 
     // Action field
     var actionInp = document.createElement('input');
@@ -157,17 +160,17 @@
         alert(CF7W_Admin.i18n.select_first);
         return;
       }
-      if ( ! confirm(CF7W_Admin.i18n.confirm_delete_batch ) ); ?>') ) return;
+      if ( ! confirm( CF7W_Admin.i18n.confirm_delete_batch ) ) return;
 
       var ids = [];
       checkedBoxes.forEach(function(cb){ ids.push(cb.value); });
 
       batchDeleteBtn.disabled    = true;
-      batchDeleteBtn.textContent = CF7W_Admin.i18n.deleting ) ); ?>';
+      batchDeleteBtn.textContent = CF7W_Admin.i18n.deleting;
 
       var body = new URLSearchParams({
         action: 'cf7w_batch_delete_submissions',
-        nonce:  CF7W_Admin.bulk_export_nonce
+        nonce:  CF7W_Admin.nonce
       });
       ids.forEach(function(id){ body.append('ids[]', id); });
 

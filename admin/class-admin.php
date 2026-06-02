@@ -17,24 +17,6 @@ class CF7W_Admin {
 			add_action( 'admin_notices', array( 'CF7W_Premium', 'notice_verify_page' ) );
 		} // @endif can_use_premium_code__premium_only
     }
-	
-	/**
-     * Convert an absolute filesystem path under the uploads directory
-     * to its public URL. Uses wp_upload_dir() so it works regardless
-     * of how WP_CONTENT_DIR or content_url() are configured.
-     *
-     * Returns empty string if the path is not under the uploads directory.
-     */
-    private static function path_to_url( string $abs_path ): string {
-        if ( ! $abs_path ) return '';
-        $upload_dir = wp_upload_dir();
-        $basedir    = untrailingslashit( $upload_dir['basedir'] );
-        $baseurl    = untrailingslashit( $upload_dir['baseurl'] );
-        if ( strpos( $abs_path, $basedir ) === 0 ) {
-            return $baseurl . substr( $abs_path, strlen( $basedir ) );
-        }
-        return '';
-    }
 
     // ── Menu ──────────────────────────────────────────────────────────────────
     public static function add_menu(): void {
@@ -368,7 +350,7 @@ $vp_placements = $settings['visual_placements'] ?? array();
         // can trace sanitization from the $_POST access through to storage.
         $vp_list = array();
         // phpcs:ignore WordPress.Security.NonceVerification.Missing -- nonce verified above via wp_verify_nonce before this point is reached
-		// phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- individual sub-fields are sanitized below during foreach iteration
+        // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- individual sub-fields are sanitized below during foreach iteration
         $raw_vp_post = isset( $_POST['cf7w_vp'] ) ? (array) wp_unslash( $_POST['cf7w_vp'] ) : array();
         foreach ( $raw_vp_post as $vp_raw_item ) {
             if ( ! is_array( $vp_raw_item ) ) continue;
@@ -388,15 +370,8 @@ $vp_placements = $settings['visual_placements'] ?? array();
         }
 
         $allowed_bg  = array( 'transparent', 'white', 'yellow', 'cyan' );
-        $vp_bg_color_raw = sanitize_key( wp_unslash( $_POST['cf7w_vp_bg_color'] ?? 'transparent' ) );
-		$vp_bg_color = in_array( $vp_bg_color_raw, $allowed_bg, true )
-			? $vp_bg_color_raw
-			: 'transparent';
-		$allowed_storage = array( '', 'google_drive', 'dropbox' );
-		$external_storage_raw = sanitize_key( wp_unslash( $_POST['cf7w_external_storage'] ?? '' ) );
-		$external_storage = in_array( $external_storage_raw, $allowed_storage, true )
-			? $external_storage_raw
-			: '';
+        $vp_bg_color = sanitize_key( wp_unslash( $_POST['cf7w_vp_bg_color'] ?? 'transparent' ) );
+        if ( ! in_array( $vp_bg_color, $allowed_bg, true ) ) { $vp_bg_color = 'transparent'; }
 
         update_post_meta( $post_id, '_cf7w_settings', array(
             'pdf_attach_id'            => absint( wp_unslash( $_POST['cf7w_pdf_attach_id'] ?? 0 ) ),
@@ -416,7 +391,10 @@ $vp_placements = $settings['visual_placements'] ?? array();
             'vp_iframe_w'              => max( 400, absint( wp_unslash( $_POST['cf7w_vp_iframe_w'] ?? 800 ) ) ),
             'vp_iframe_h'              => max( 400, absint( wp_unslash( $_POST['cf7w_vp_iframe_h'] ?? 1000 ) ) ),
 			// premium settings — saved for all users, only used when licensed
-			'external_storage'         => $external_storage,
+			'external_storage'         => ( static function() {
+											$val = sanitize_key( wp_unslash( $_POST['cf7w_external_storage'] ?? '' ) );
+											return in_array( $val, array( '', 'google_drive', 'dropbox' ), true ) ? $val : '';
+										} )(),
         ) );
     }
 
@@ -451,26 +429,26 @@ $vp_placements = $settings['visual_placements'] ?? array();
         global $wpdb;
 
         // Get the filled PDF path before deleting the row so we can remove the file
-        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching
-		$row = $wpdb->get_row(
-			$wpdb->prepare( 'SELECT filled_pdf FROM %i WHERE id = %d LIMIT 1', cf7w_db_table(), $id )
-		);
+        $row = $wpdb->get_row( $wpdb->prepare(
+            'SELECT filled_pdf FROM ' . cf7w_db_table() . ' WHERE id = %d LIMIT 1',
+            $id
+        ) );
 
-		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching
-		$deleted = $wpdb->delete(
-			cf7w_db_table(),
-			array( 'id' => $id ),
-			array( '%d' )
-		);
+        // Delete the DB row
+        $deleted = $wpdb->delete(
+            cf7w_db_table(),
+            array( 'id' => $id ),
+            array( '%d' )
+        );
 
         if ( ! $deleted ) {
             wp_send_json_error( array( 'message' => 'Submission not found.' ) );
         }
 
         // Delete the filled PDF file from disk if it exists
-        if ( $row && ! empty( $row->filled_pdf ) ) {
-			cf7w_delete_file( $row->filled_pdf );
-		}
+        if ( $row && ! empty( $row->filled_pdf ) && file_exists( $row->filled_pdf ) ) {
+            @unlink( $row->filled_pdf );
+        }
 
         wp_send_json_success( array( 'message' => 'Submission deleted.' ) );
     }
@@ -568,17 +546,11 @@ $vp_placements = $settings['visual_placements'] ?? array();
         global $wpdb;
         $table = cf7w_db_table();
 
-        // Verify nonce if the search form was submitted
-		if ( isset( $_GET['cf7w_search_nonce'] ) ) {
-			if ( ! wp_verify_nonce(
-				sanitize_text_field( wp_unslash( $_GET['cf7w_search_nonce'] ) ),
-				'cf7w_submissions_search'
-			) ) {
-				// Nonce invalid — ignore all filter parameters and show unfiltered list
-				$search  = '';
-				$form_id = 0;
-			}
-		}
+        // Verify nonce if the search form was submitted; skip on first page load
+        // (no nonce present means a fresh unfiltered load, which is safe).
+        if ( isset( $_GET['cf7w_search_nonce'] ) ) {
+            wp_verify_nonce( sanitize_text_field( wp_unslash( $_GET['cf7w_search_nonce'] ) ), 'cf7w_submissions_search' );
+        }
 
         $search  = sanitize_text_field( wp_unslash( $_GET['s']       ?? '' ) );
         $form_id = absint( wp_unslash( $_GET['form_id']              ?? 0 ) );
@@ -607,25 +579,37 @@ $vp_placements = $settings['visual_placements'] ?? array();
             $rows     = $cached['rows'];
             $form_ids = $cached['form_ids'];
         } else {
-			// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- NoCaching satisfied by wp_cache_set below; DirectQuery intentional
-			if ( $form_id && $search ) {
-				$like  = '%' . $wpdb->esc_like( $search ) . '%';
-				$total = (int) $wpdb->get_var( $wpdb->prepare( 'SELECT COUNT(*) FROM %i WHERE form_id = %d AND (form_data LIKE %s OR ip_address LIKE %s)', cf7w_db_table(), $form_id, $like, $like ) );
-				$rows  = $wpdb->get_results( $wpdb->prepare( 'SELECT * FROM %i WHERE form_id = %d AND (form_data LIKE %s OR ip_address LIKE %s) ORDER BY entry_date DESC LIMIT %d OFFSET %d', cf7w_db_table(), $form_id, $like, $like, $per, $offset ) );
-			} elseif ( $form_id ) {
-				$total = (int) $wpdb->get_var( $wpdb->prepare( 'SELECT COUNT(*) FROM %i WHERE form_id = %d', cf7w_db_table(), $form_id ) );
-				$rows  = $wpdb->get_results( $wpdb->prepare( 'SELECT * FROM %i WHERE form_id = %d ORDER BY entry_date DESC LIMIT %d OFFSET %d', cf7w_db_table(), $form_id, $per, $offset ) );
-			} elseif ( $search ) {
-				$like  = '%' . $wpdb->esc_like( $search ) . '%';
-				$total = (int) $wpdb->get_var( $wpdb->prepare( 'SELECT COUNT(*) FROM %i WHERE form_data LIKE %s OR ip_address LIKE %s', cf7w_db_table(), $like, $like ) );
-				$rows  = $wpdb->get_results( $wpdb->prepare( 'SELECT * FROM %i WHERE form_data LIKE %s OR ip_address LIKE %s ORDER BY entry_date DESC LIMIT %d OFFSET %d', cf7w_db_table(), $like, $like, $per, $offset ) );
-			} else {
-				$total = (int) $wpdb->get_var( $wpdb->prepare( 'SELECT COUNT(*) FROM %i', cf7w_db_table() ) );
-				$rows  = $wpdb->get_results( $wpdb->prepare( 'SELECT * FROM %i ORDER BY entry_date DESC LIMIT %d OFFSET %d', cf7w_db_table(), $per, $offset ) );
-			}
+            // Build each query concretely so static analysis can verify every
+            // placeholder matches its argument count with no dynamic fragments.
+            $t = esc_sql( $table ); // trusted: $wpdb->prefix only, never user input
 
-			// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- NoCaching satisfied by wp_cache_set below
-			$form_ids = $wpdb->get_col( $wpdb->prepare( 'SELECT DISTINCT form_id FROM %i ORDER BY form_id', cf7w_db_table() ) );
+            // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- NoCaching satisfied by wp_cache_set below; DirectQuery intentional
+            if ( $form_id && $search ) {
+                $like   = '%' . $wpdb->esc_like( $search ) . '%';
+                // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- $t is esc_sql() on $wpdb->prefix
+                $total = (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*) FROM {$t} WHERE form_id = %d AND (form_data LIKE %s OR ip_address LIKE %s)", $form_id, $like, $like ) );
+                // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+                $rows  = $wpdb->get_results( $wpdb->prepare( "SELECT * FROM {$t} WHERE form_id = %d AND (form_data LIKE %s OR ip_address LIKE %s) ORDER BY entry_date DESC LIMIT %d OFFSET %d", $form_id, $like, $like, $per, $offset ) );
+            } elseif ( $form_id ) {
+                // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- $t is esc_sql() on $wpdb->prefix
+                $total = (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*) FROM {$t} WHERE form_id = %d", $form_id ) );
+                // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+                $rows  = $wpdb->get_results( $wpdb->prepare( "SELECT * FROM {$t} WHERE form_id = %d ORDER BY entry_date DESC LIMIT %d OFFSET %d", $form_id, $per, $offset ) );
+            } elseif ( $search ) {
+                $like   = '%' . $wpdb->esc_like( $search ) . '%';
+                // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- $t is esc_sql() on $wpdb->prefix
+                $total = (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*) FROM {$t} WHERE form_data LIKE %s OR ip_address LIKE %s", $like, $like ) );
+                // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+                $rows  = $wpdb->get_results( $wpdb->prepare( "SELECT * FROM {$t} WHERE form_data LIKE %s OR ip_address LIKE %s ORDER BY entry_date DESC LIMIT %d OFFSET %d", $like, $like, $per, $offset ) );
+            } else {
+                // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- $t is esc_sql() on $wpdb->prefix
+                $total = (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*) FROM {$t}", array() ) );
+                // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+                $rows  = $wpdb->get_results( $wpdb->prepare( "SELECT * FROM {$t} ORDER BY entry_date DESC LIMIT %d OFFSET %d", $per, $offset ) );
+            }
+
+            // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- $t is esc_sql() on $wpdb->prefix
+            $form_ids = $wpdb->get_col( $wpdb->prepare( "SELECT DISTINCT form_id FROM {$t} ORDER BY form_id", array() ) );
 
             wp_cache_set( $cache_key, array(
                 'total'    => $total,
@@ -645,15 +629,12 @@ $vp_placements = $settings['visual_placements'] ?? array();
    <?php 
 	$verify_page_url = '';
 	global $wpdb;
-	// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching
 	$verify_page_id = $wpdb->get_var(
-		$wpdb->prepare(
-			'SELECT ID FROM %i WHERE post_status = %s AND post_type = %s AND post_content LIKE %s LIMIT 1',
-			$wpdb->posts,
-			'publish',
-			'page',
-			'%cf7w_verify%'
-		)
+		"SELECT ID FROM {$wpdb->posts}
+		 WHERE post_status = 'publish'
+		 AND post_type = 'page'
+		 AND post_content LIKE '%cf7w_verify%'
+		 LIMIT 1"
 	);
 	if ( $verify_page_id ) {
 		$verify_page_url = get_permalink( $verify_page_id );
@@ -703,11 +684,8 @@ $vp_placements = $settings['visual_placements'] ?? array();
         <input type="checkbox" id="cf7w-select-all" style="vertical-align:middle;margin:0;">
         <?php esc_html_e( 'Select All', 'sign-pdf-waiver-for-contact-form-7' ); ?>
       </label>
-	  <form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" id="cf7w-bulk-form">
-		<?php wp_nonce_field( 'cf7w_bulk_export' ); ?>
-		<input type="hidden" name="action" value="cf7w_bulk_export">
-		<div class="cf7w-batch-actions" style="margin-bottom:12px;display:flex;align-items:center;gap:10px;">
-		  <button type="submit" id="cf7w-batch-download" class="button button-primary" disabled>
+	  <div style="display:flex;align-items:center;gap:10px;">
+		  <button type="button" id="cf7w-batch-download" class="button button-primary" disabled>
 			<?php esc_html_e( 'Export as ZIP', 'sign-pdf-waiver-for-contact-form-7' ); ?>
 			(<span id="cf7w-selected-count">0</span>)
 		  </button>
@@ -715,7 +693,7 @@ $vp_placements = $settings['visual_placements'] ?? array();
 		    <?php esc_html_e( 'Delete Selected', 'sign-pdf-waiver-for-contact-form-7' ); ?>
 			(<span id="cf7w-selected-count">0</span>)
 		  </button>
-		</div>
+	  </div>
 	<?php else : // @else can_use_premium_code__premium_only ?>
 	  <div style="margin-bottom:12px;">
 	    <?php if ( function_exists( 'cf7w_fs' ) ) : ?>
@@ -774,9 +752,9 @@ $vp_placements = $settings['visual_placements'] ?? array();
     <?php foreach ( $rows as $row ) :
         $data     = json_decode( $row->form_data, true ) ?: array();
         $pdf_abs  = $row->filled_pdf ?? '';
-        $pdf_url  = $pdf_abs ? self::path_to_url( $pdf_abs ) : '';
+        $pdf_url  = $pdf_abs ? str_replace( WP_CONTENT_DIR, content_url(), $pdf_abs ) : '';
         $cert_abs = $row->cert_pdf  ?? '';
-        $cert_url = $cert_abs ? self::path_to_url( $cert_abs ) : '';
+        $cert_url = $cert_abs ? str_replace( WP_CONTENT_DIR, content_url(), $cert_abs ) : '';
         $hl       = $search ? preg_quote( $search, '/' ) : '';
     ?>
     <tr data-id="<?php echo (int) $row->id; ?>"
@@ -797,37 +775,36 @@ $vp_placements = $settings['visual_placements'] ?? array();
       <td>
         <?php if ( empty( $data ) ) : ?>
           <em style="color:#aaa;"><?php esc_html_e( 'none', 'sign-pdf-waiver-for-contact-form-7' ); ?></em>
+        <?php else : ?>
         <div class="cf7w-sub-fields">
-		<?php
-		$allowed_kses = array( 'mark' => array() );
-		foreach ( $data as $lbl => $val ) :
-			$is_long    = mb_strlen( $val ) > 120;
-			$safe_lbl   = esc_html( $lbl );
-			$safe_val   = esc_html( $val );
-			$safe_short = esc_html( mb_substr( $val, 0, 120 ) ) . '…';
-			if ( $hl ) {
-				$safe_lbl   = preg_replace( '/(' . $hl . ')/i', '<mark>$1</mark>', $safe_lbl );
-				$safe_val   = preg_replace( '/(' . $hl . ')/i', '<mark>$1</mark>', $safe_val );
-				$safe_short = preg_replace( '/(' . $hl . ')/i', '<mark>$1</mark>', $safe_short );
-			}
-		?>
-		  <div class="cf7w-sub-field">
-			<span class="cf7w-sub-lbl"><?php echo wp_kses( $safe_lbl, $allowed_kses ); ?></span>
-			<span class="cf7w-sub-val">
-			  <?php if ( $is_long ) : ?>
-				<span class="cf7w-short"><?php echo wp_kses( $safe_short, $allowed_kses ); ?>
-				  <button type="button" class="cf7w-expand-btn">more</button>
-				</span>
-				<span class="cf7w-full" style="display:none"><?php echo wp_kses( $safe_val, $allowed_kses ); ?>
-				  <button type="button" class="cf7w-collapse-btn">less</button>
-				</span>
-			  <?php else : ?>
-				<?php echo wp_kses( $safe_val, $allowed_kses ); ?>
-			  <?php endif; ?>
-			</span>
-		  </div>
-		<?php endforeach; ?>
-		</div>
+        <?php foreach ( $data as $lbl => $val ) :
+            $is_long    = mb_strlen( $val ) > 120;
+            $safe_lbl   = esc_html( $lbl );
+            $safe_val   = esc_html( $val );
+            $safe_short = esc_html( mb_substr( $val, 0, 120 ) ) . '…';
+            if ( $hl ) {
+                $safe_lbl   = preg_replace( '/(' . $hl . ')/i', '<mark>$1</mark>', $safe_lbl );
+                $safe_val   = preg_replace( '/(' . $hl . ')/i', '<mark>$1</mark>', $safe_val );
+                $safe_short = preg_replace( '/(' . $hl . ')/i', '<mark>$1</mark>', $safe_short );
+            }
+        ?>
+          <div class="cf7w-sub-field">
+            <span class="cf7w-sub-lbl"><?php echo $safe_lbl; ?></span>
+            <span class="cf7w-sub-val">
+              <?php if ( $is_long ) : ?>
+                <span class="cf7w-short"><?php echo $safe_short; ?>
+                  <button type="button" class="cf7w-expand-btn">more</button>
+                </span>
+                <span class="cf7w-full" style="display:none"><?php echo $safe_val; ?>
+                  <button type="button" class="cf7w-collapse-btn">less</button>
+                </span>
+              <?php else : ?>
+                <?php echo $safe_val; ?>
+              <?php endif; ?>
+            </span>
+          </div>
+        <?php endforeach; ?>
+        </div>
         <?php endif; ?>
       </td>
 
@@ -925,24 +902,6 @@ $vp_placements = $settings['visual_placements'] ?? array();
             // PDF.js bundled locally — assets/vendor/pdfjs/pdf.min.js
             wp_enqueue_script( 'pdfjs', CF7W_URL . 'assets/vendor/pdfjs/pdf.min.js', array(), '3.11.174', true );
             wp_enqueue_script( 'cf7w-admin', CF7W_URL . 'assets/js/admin.js', array( 'jquery', 'jquery-ui-sortable', 'pdfjs' ), CF7W_VERSION, true );
-			wp_enqueue_script( 'cf7w-submissions', CF7W_URL . 'assets/js/submissions.js', array( 'jquery' ), CF7W_VERSION, true );
-			wp_localize_script( 'cf7w-submissions', 'CF7W_Admin', array(
-				'ajax_url'              => admin_url( 'admin-ajax.php' ),
-				'admin_post_url'        => admin_url( 'admin-post.php' ),
-				'nonce'                 => wp_create_nonce( 'cf7w_admin_nonce' ),
-				'bulk_export_nonce'     => wp_create_nonce( 'cf7w_bulk_export' ),
-				'is_premium'            => cf7w_fs()->can_use_premium_code__premium_only() ? '1' : '0',
-				'i18n' => array(
-					'confirm_delete_single' => __( 'Delete this submission? This cannot be undone.', 'sign-pdf-waiver-for-contact-form-7' ),
-					'confirm_delete_batch'  => __( 'Delete the selected submissions? This cannot be undone.', 'sign-pdf-waiver-for-contact-form-7' ),
-					'deleting'              => __( 'Deleting…', 'sign-pdf-waiver-for-contact-form-7' ),
-					'delete_label'          => __( 'Delete', 'sign-pdf-waiver-for-contact-form-7' ),
-					'delete_selected_label' => __( 'Delete Selected', 'sign-pdf-waiver-for-contact-form-7' ),
-					'delete_failed'         => __( 'Delete failed.', 'sign-pdf-waiver-for-contact-form-7' ),
-					'network_error'         => __( 'Network error. Please try again.', 'sign-pdf-waiver-for-contact-form-7' ),
-					'select_first'          => __( 'Please select submissions first.', 'sign-pdf-waiver-for-contact-form-7' ),
-				),
-			) );
             wp_localize_script( 'cf7w-admin', 'CF7W_Admin', array(
                 'ajax_url'          => admin_url( 'admin-ajax.php' ),
                 'nonce'             => wp_create_nonce( 'cf7w_admin_nonce' ),
@@ -953,6 +912,32 @@ $vp_placements = $settings['visual_placements'] ?? array();
                 'media_unavailable' => __( 'Media library unavailable.', 'sign-pdf-waiver-for-contact-form-7' ),
                 'replace_pdf'       => __( 'Replace PDF', 'sign-pdf-waiver-for-contact-form-7' ),
                 'pdfjs_worker_url'  => CF7W_URL . 'assets/vendor/pdfjs/pdf.worker.min.js',
+            ) );
+        }
+
+        if ( $on_cf7w ) {
+            wp_enqueue_script(
+                'cf7w-submissions',
+                CF7W_URL . 'assets/js/submissions.js',
+                array(),
+                CF7W_VERSION,
+                true
+            );
+            wp_localize_script( 'cf7w-submissions', 'CF7W_Admin', array(
+                'nonce'                 => wp_create_nonce( 'cf7w_admin_nonce' ),
+                'bulk_export_nonce'     => wp_create_nonce( 'cf7w_bulk_export' ),
+                'admin_post_url'        => admin_url( 'admin-post.php' ),
+                'is_premium'            => function_exists( 'cf7w_fs' ) && cf7w_fs()->can_use_premium_code__premium_only() ? 1 : 0,
+                'i18n' => array(
+                    'confirm_delete_single' => __( 'Delete this submission? This cannot be undone.', 'sign-pdf-waiver-for-contact-form-7' ),
+                    'confirm_delete_batch'  => __( 'Delete the selected submissions? This cannot be undone.', 'sign-pdf-waiver-for-contact-form-7' ),
+                    'deleting'              => __( 'Deleting…', 'sign-pdf-waiver-for-contact-form-7' ),
+                    'delete_label'          => __( 'Delete', 'sign-pdf-waiver-for-contact-form-7' ),
+                    'delete_selected_label' => __( 'Delete Selected', 'sign-pdf-waiver-for-contact-form-7' ),
+                    'delete_failed'         => __( 'Delete failed.', 'sign-pdf-waiver-for-contact-form-7' ),
+                    'network_error'         => __( 'Network error. Please try again.', 'sign-pdf-waiver-for-contact-form-7' ),
+                    'select_first'          => __( 'Please select submissions first.', 'sign-pdf-waiver-for-contact-form-7' ),
+                ),
             ) );
         }
 

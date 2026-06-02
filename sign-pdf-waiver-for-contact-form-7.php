@@ -25,7 +25,7 @@ define( 'CF7W_DB_VERSION', '1.2' ); // increment this only when schema changes
  * Stored under wp-content/uploads/sign-pdf-waiver-for-contact-form-7/ — no public URL exists for this path.
  * Files are served only through the authenticated cf7w_serve_file proxy.
  */
-define( 'CF7W_SECURE_DIR', wp_upload_dir()['basedir'] . '/sign-pdf-waiver-for-contact-form-7' );
+define( 'CF7W_SECURE_DIR', wp_upload_dir()['basedir'] . '/sign-pdf-waiver-for-contact-form-7/' );
 
 // CF7W_DB_TABLE cannot be defined at file-load time because $wpdb may not be
 // initialised yet (causes fatal during activation). Use a helper function instead.

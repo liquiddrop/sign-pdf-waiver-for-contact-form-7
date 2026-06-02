@@ -1322,7 +1322,7 @@ class CF7W_PDF_Filler {
                             imagefill( $flat, 0, 0, $white );
                             imagecopy( $flat, $im_sig, 0, 0, 0, 0, $sw, $sh );
                             imagedestroy( $im_sig );
-                            $jpeg = self::image_to_jpeg( $flat );
+                            $sig_jpeg = self::image_to_jpeg( $flat );
                             imagedestroy( $flat );
                             if ( $sig_jpeg ) {
                                 // Compute PDF coords
