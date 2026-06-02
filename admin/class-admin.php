@@ -18,6 +18,24 @@ class CF7W_Admin {
 		} // @endif can_use_premium_code__premium_only
     }
 
+	/**
+     * Convert an absolute filesystem path under the uploads directory
+     * to its public URL. Uses wp_upload_dir() so it works regardless
+     * of how WP_CONTENT_DIR or content_url() are configured.
+     *
+     * Returns empty string if the path is not under the uploads directory.
+     */
+    private static function path_to_url( string $abs_path ): string {
+        if ( ! $abs_path ) return '';
+        $upload_dir = wp_upload_dir();
+        $basedir    = untrailingslashit( $upload_dir['basedir'] );
+        $baseurl    = untrailingslashit( $upload_dir['baseurl'] );
+        if ( strpos( $abs_path, $basedir ) === 0 ) {
+            return $baseurl . substr( $abs_path, strlen( $basedir ) );
+        }
+        return '';
+    }
+
     // ── Menu ──────────────────────────────────────────────────────────────────
     public static function add_menu(): void {
         add_submenu_page(
@@ -370,8 +388,15 @@ $vp_placements = $settings['visual_placements'] ?? array();
         }
 
         $allowed_bg  = array( 'transparent', 'white', 'yellow', 'cyan' );
-        $vp_bg_color = sanitize_key( wp_unslash( $_POST['cf7w_vp_bg_color'] ?? 'transparent' ) );
-        if ( ! in_array( $vp_bg_color, $allowed_bg, true ) ) { $vp_bg_color = 'transparent'; }
+                $vp_bg_color_raw = sanitize_key( wp_unslash( $_POST['cf7w_vp_bg_color'] ?? 'transparent' ) );
+		$vp_bg_color = in_array( $vp_bg_color_raw, $allowed_bg, true )
+			? $vp_bg_color_raw
+			: 'transparent';
+		$allowed_storage = array( '', 'google_drive', 'dropbox' );
+		$external_storage_raw = sanitize_key( wp_unslash( $_POST['cf7w_external_storage'] ?? '' ) );
+		$external_storage = in_array( $external_storage_raw, $allowed_storage, true )
+			? $external_storage_raw
+			: '';
 
         update_post_meta( $post_id, '_cf7w_settings', array(
             'pdf_attach_id'            => absint( wp_unslash( $_POST['cf7w_pdf_attach_id'] ?? 0 ) ),
@@ -391,10 +416,7 @@ $vp_placements = $settings['visual_placements'] ?? array();
             'vp_iframe_w'              => max( 400, absint( wp_unslash( $_POST['cf7w_vp_iframe_w'] ?? 800 ) ) ),
             'vp_iframe_h'              => max( 400, absint( wp_unslash( $_POST['cf7w_vp_iframe_h'] ?? 1000 ) ) ),
 			// premium settings — saved for all users, only used when licensed
-			'external_storage'         => ( static function() {
-											$val = sanitize_key( wp_unslash( $_POST['cf7w_external_storage'] ?? '' ) );
-											return in_array( $val, array( '', 'google_drive', 'dropbox' ), true ) ? $val : '';
-										} )(),
+			'external_storage'         => $external_storage,
         ) );
     }
 
@@ -429,17 +451,17 @@ $vp_placements = $settings['visual_placements'] ?? array();
         global $wpdb;
 
         // Get the filled PDF path before deleting the row so we can remove the file
-        $row = $wpdb->get_row( $wpdb->prepare(
-            'SELECT filled_pdf FROM ' . cf7w_db_table() . ' WHERE id = %d LIMIT 1',
-            $id
-        ) );
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching
+		$row = $wpdb->get_row(
+			$wpdb->prepare( 'SELECT filled_pdf FROM %i WHERE id = %d LIMIT 1', cf7w_db_table(), $id )
+		);
 
-        // Delete the DB row
-        $deleted = $wpdb->delete(
-            cf7w_db_table(),
-            array( 'id' => $id ),
-            array( '%d' )
-        );
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching
+		$deleted = $wpdb->delete(
+			cf7w_db_table(),
+			array( 'id' => $id ),
+			array( '%d' )
+		);
 
         if ( ! $deleted ) {
             wp_send_json_error( array( 'message' => 'Submission not found.' ) );
@@ -548,9 +570,16 @@ $vp_placements = $settings['visual_placements'] ?? array();
 
         // Verify nonce if the search form was submitted; skip on first page load
         // (no nonce present means a fresh unfiltered load, which is safe).
-        if ( isset( $_GET['cf7w_search_nonce'] ) ) {
-            wp_verify_nonce( sanitize_text_field( wp_unslash( $_GET['cf7w_search_nonce'] ) ), 'cf7w_submissions_search' );
-        }
+		if ( isset( $_GET['cf7w_search_nonce'] ) ) {
+			if ( ! wp_verify_nonce(
+				sanitize_text_field( wp_unslash( $_GET['cf7w_search_nonce'] ) ),
+				'cf7w_submissions_search'
+			) ) {
+				// Nonce invalid — ignore all filter parameters and show unfiltered list
+				$search  = '';
+				$form_id = 0;
+			}
+		}
 
         $search  = sanitize_text_field( wp_unslash( $_GET['s']       ?? '' ) );
         $form_id = absint( wp_unslash( $_GET['form_id']              ?? 0 ) );
@@ -579,37 +608,25 @@ $vp_placements = $settings['visual_placements'] ?? array();
             $rows     = $cached['rows'];
             $form_ids = $cached['form_ids'];
         } else {
-            // Build each query concretely so static analysis can verify every
-            // placeholder matches its argument count with no dynamic fragments.
-            $t = esc_sql( $table ); // trusted: $wpdb->prefix only, never user input
+			// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- NoCaching satisfied by wp_cache_set below; DirectQuery intentional
+			if ( $form_id && $search ) {
+				$like  = '%' . $wpdb->esc_like( $search ) . '%';
+				$total = (int) $wpdb->get_var( $wpdb->prepare( 'SELECT COUNT(*) FROM %i WHERE form_id = %d AND (form_data LIKE %s OR ip_address LIKE %s)', cf7w_db_table(), $form_id, $like, $like ) );
+				$rows  = $wpdb->get_results( $wpdb->prepare( 'SELECT * FROM %i WHERE form_id = %d AND (form_data LIKE %s OR ip_address LIKE %s) ORDER BY entry_date DESC LIMIT %d OFFSET %d', cf7w_db_table(), $form_id, $like, $like, $per, $offset ) );
+			} elseif ( $form_id ) {
+				$total = (int) $wpdb->get_var( $wpdb->prepare( 'SELECT COUNT(*) FROM %i WHERE form_id = %d', cf7w_db_table(), $form_id ) );
+				$rows  = $wpdb->get_results( $wpdb->prepare( 'SELECT * FROM %i WHERE form_id = %d ORDER BY entry_date DESC LIMIT %d OFFSET %d', cf7w_db_table(), $form_id, $per, $offset ) );
+			} elseif ( $search ) {
+				$like  = '%' . $wpdb->esc_like( $search ) . '%';
+				$total = (int) $wpdb->get_var( $wpdb->prepare( 'SELECT COUNT(*) FROM %i WHERE form_data LIKE %s OR ip_address LIKE %s', cf7w_db_table(), $like, $like ) );
+				$rows  = $wpdb->get_results( $wpdb->prepare( 'SELECT * FROM %i WHERE form_data LIKE %s OR ip_address LIKE %s ORDER BY entry_date DESC LIMIT %d OFFSET %d', cf7w_db_table(), $like, $like, $per, $offset ) );
+			} else {
+				$total = (int) $wpdb->get_var( $wpdb->prepare( 'SELECT COUNT(*) FROM %i', cf7w_db_table() ) );
+				$rows  = $wpdb->get_results( $wpdb->prepare( 'SELECT * FROM %i ORDER BY entry_date DESC LIMIT %d OFFSET %d', cf7w_db_table(), $per, $offset ) );
+			}
 
-            // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- NoCaching satisfied by wp_cache_set below; DirectQuery intentional
-            if ( $form_id && $search ) {
-                $like   = '%' . $wpdb->esc_like( $search ) . '%';
-                // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- $t is esc_sql() on $wpdb->prefix
-                $total = (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*) FROM {$t} WHERE form_id = %d AND (form_data LIKE %s OR ip_address LIKE %s)", $form_id, $like, $like ) );
-                // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
-                $rows  = $wpdb->get_results( $wpdb->prepare( "SELECT * FROM {$t} WHERE form_id = %d AND (form_data LIKE %s OR ip_address LIKE %s) ORDER BY entry_date DESC LIMIT %d OFFSET %d", $form_id, $like, $like, $per, $offset ) );
-            } elseif ( $form_id ) {
-                // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- $t is esc_sql() on $wpdb->prefix
-                $total = (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*) FROM {$t} WHERE form_id = %d", $form_id ) );
-                // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
-                $rows  = $wpdb->get_results( $wpdb->prepare( "SELECT * FROM {$t} WHERE form_id = %d ORDER BY entry_date DESC LIMIT %d OFFSET %d", $form_id, $per, $offset ) );
-            } elseif ( $search ) {
-                $like   = '%' . $wpdb->esc_like( $search ) . '%';
-                // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- $t is esc_sql() on $wpdb->prefix
-                $total = (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*) FROM {$t} WHERE form_data LIKE %s OR ip_address LIKE %s", $like, $like ) );
-                // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
-                $rows  = $wpdb->get_results( $wpdb->prepare( "SELECT * FROM {$t} WHERE form_data LIKE %s OR ip_address LIKE %s ORDER BY entry_date DESC LIMIT %d OFFSET %d", $like, $like, $per, $offset ) );
-            } else {
-                // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- $t is esc_sql() on $wpdb->prefix
-                $total = (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*) FROM {$t}", array() ) );
-                // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
-                $rows  = $wpdb->get_results( $wpdb->prepare( "SELECT * FROM {$t} ORDER BY entry_date DESC LIMIT %d OFFSET %d", $per, $offset ) );
-            }
-
-            // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- $t is esc_sql() on $wpdb->prefix
-            $form_ids = $wpdb->get_col( $wpdb->prepare( "SELECT DISTINCT form_id FROM {$t} ORDER BY form_id", array() ) );
+			// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- NoCaching satisfied by wp_cache_set below
+			$form_ids = $wpdb->get_col( $wpdb->prepare( 'SELECT DISTINCT form_id FROM %i ORDER BY form_id', cf7w_db_table() ) );
 
             wp_cache_set( $cache_key, array(
                 'total'    => $total,
@@ -630,11 +647,13 @@ $vp_placements = $settings['visual_placements'] ?? array();
 	$verify_page_url = '';
 	global $wpdb;
 	$verify_page_id = $wpdb->get_var(
-		"SELECT ID FROM {$wpdb->posts}
-		 WHERE post_status = 'publish'
-		 AND post_type = 'page'
-		 AND post_content LIKE '%cf7w_verify%'
-		 LIMIT 1"
+				$wpdb->prepare(
+			'SELECT ID FROM %i WHERE post_status = %s AND post_type = %s AND post_content LIKE %s LIMIT 1',
+			$wpdb->posts,
+			'publish',
+			'page',
+			'%cf7w_verify%'
+		)
 	);
 	if ( $verify_page_id ) {
 		$verify_page_url = get_permalink( $verify_page_id );
@@ -752,9 +771,9 @@ $vp_placements = $settings['visual_placements'] ?? array();
     <?php foreach ( $rows as $row ) :
         $data     = json_decode( $row->form_data, true ) ?: array();
         $pdf_abs  = $row->filled_pdf ?? '';
-        $pdf_url  = $pdf_abs ? str_replace( WP_CONTENT_DIR, content_url(), $pdf_abs ) : '';
+        $pdf_url  = $pdf_abs ? self::path_to_url( $pdf_abs ) : '';
         $cert_abs = $row->cert_pdf  ?? '';
-        $cert_url = $cert_abs ? str_replace( WP_CONTENT_DIR, content_url(), $cert_abs ) : '';
+        $cert_url = $cert_abs ? self::path_to_url( $cert_abs ) : '';
         $hl       = $search ? preg_quote( $search, '/' ) : '';
     ?>
     <tr data-id="<?php echo (int) $row->id; ?>"
