@@ -3,7 +3,7 @@
  * Plugin Name: Sign PDF Waiver for Contact Form 7
  * Plugin URI:  https://wordpress.org/plugins/sign-pdf-waiver-for-contact-form-7/
  * Description: Attach a PDF waiver to CF7. Map fields, capture signature, fill and email the PDF.
- * Version:     1.0.3
+ * Version:     1.0.4
  * Requires at least: 6.2
  * Requires PHP: 7.4
  * Requires Plugins: contact-form-7
