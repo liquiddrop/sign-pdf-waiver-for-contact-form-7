@@ -80,7 +80,7 @@ class CF7W_Admin {
         $sig_w    = $settings['sig_w']         ?? 200;
         $sig_h    = $settings['sig_h']         ?? 60;
         $filename_scheme  = $settings['pdf_filename_scheme'] ?? '';
-        $save_pdf         = isset( $settings['save_pdf'] ) ? (bool) $settings['save_pdf'] : true;
+        $delete_pdf         = isset( $settings['delete_pdf'] ) ? (bool) $settings['delete_pdf'] : false;
         $save_signature   = isset( $settings['save_signature'] ) ? (bool) $settings['save_signature'] : true;
 
         // Get CF7 fields from the saved form object (server-side render)
@@ -205,7 +205,7 @@ $vp_placements = $settings['visual_placements'] ?? array();
   <h3><?php esc_html_e( 'Step 3 – PDF Filename &amp; Storage', 'sign-pdf-waiver-for-contact-form-7' ); ?></h3>
 
   <p class="description">
-    <?php esc_html_e( 'Pattern for the saved PDF filename. Use {PDF Field Name} tokens to include field values. Built-in: {date}, {time}, {form_id}.', 'sign-pdf-waiver-for-contact-form-7' ); ?><br>
+    <?php esc_html_e( 'Pattern for the saved PDF filename. Use {PDF Field Name} or {Contact Form 7 Field Name} tokens to include field values. Built-in field: {date}, {time}, {form_id}.', 'sign-pdf-waiver-for-contact-form-7' ); ?><br>
     <?php esc_html_e( 'Example: form_{Full Name}_{date} → form_John_Smith_2024-01-15.pdf', 'sign-pdf-waiver-for-contact-form-7' ); ?>
   </p>
   <input type="text" name="cf7w_pdf_filename_scheme"
@@ -253,26 +253,28 @@ $vp_placements = $settings['visual_placements'] ?? array();
           </p>
         </td>
       </tr>
-	  <tr>
+	  	  <tr id="cf7w-delete-pdf-row" <?php echo $attach_pdf ? '' : 'style="opacity:0.5;pointer-events:none;"'; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- hardcoded static attribute string ?>>
         <th scope="row" style="width:220px;">
-          <?php esc_html_e( 'Save filled PDF', 'sign-pdf-waiver-for-contact-form-7' ); ?>
+          <?php esc_html_e( 'Delete filled PDF after email', 'sign-pdf-waiver-for-contact-form-7' ); ?>
         </th>
         <td>
           <label>
-            <input type="checkbox" name="cf7w_save_pdf" value="1"
-                   <?php checked( $settings['save_pdf'] ?? true ); ?>>
-            <?php esc_html_e( 'Save filled PDF to server storage', 'sign-pdf-waiver-for-contact-form-7' ); ?>
+            <input type="checkbox" name="cf7w_delete_pdf" id="cf7w_delete_pdf" value="1"
+                   <?php checked( $delete_pdf && $attach_pdf ); ?>
+                   <?php disabled( ! $attach_pdf ); ?>>
+            <?php esc_html_e( 'Delete the filled PDF from the server after it has been emailed', 'sign-pdf-waiver-for-contact-form-7' ); ?>
           </label>
-          <p class="description">
-            <?php esc_html_e( 'When unchecked, the filled pdf is deleted from the server immediately after emails are sent. The database record will still exist', 'sign-pdf-waiver-for-contact-form-7' ); ?>
-			<p class="description" style="margin-top:12px;">
-			  <strong><?php esc_html_e( 'Note:', 'sign-pdf-waiver-for-contact-form-7' ); ?></strong>
-			  <?php esc_html_e( 'If neither &quot;Save filled PDF&quot; nor &quot;Attach PDF to email&quot; are enabled, no record of the filled PDF will be kept.', 'sign-pdf-waiver-for-contact-form-7' ); ?>
-		    </p>
+          <p class="description" style="margin-top:4px;">
+            <?php esc_html_e( 'When checked, the filled PDF is deleted from the server immediately after the outgoing emails are sent. The database record will still exist.', 'sign-pdf-waiver-for-contact-form-7' ); ?>
           </p>
+          <?php if ( ! $attach_pdf ) : ?>
+          <p class="description" style="margin-top:6px;color:#b32d2e;">
+            <strong><?php esc_html_e( 'Note:', 'sign-pdf-waiver-for-contact-form-7' ); ?></strong>
+            <?php esc_html_e( 'Enable "Email PDF Attachment" above and save to use this option.', 'sign-pdf-waiver-for-contact-form-7' ); ?>
+          </p>
+          <?php endif; ?>
         </td>
       </tr>
-      <tr>
         <th scope="row">
           <?php esc_html_e( 'Email Certificate PDF attachment', 'sign-pdf-waiver-for-contact-form-7' ); ?>
           <span style="background:#f0b849;color:#000;font-size:10px;font-weight:700;
@@ -350,7 +352,8 @@ $vp_placements = $settings['visual_placements'] ?? array();
             . 'window.CF7W_VpEnabled=true;'
             . 'window.CF7W_VpFontSize='   . (int) ( $settings['vp_font_size'] ?? 12 ) . ';'
             . 'window.CF7W_VpIframeW='    . (int) ( $settings['vp_iframe_w']  ?? 800 ) . ';'
-            . 'window.CF7W_VpIframeH='    . (int) ( $settings['vp_iframe_h']  ?? 1000 ) . ';';
+            . 'window.CF7W_VpIframeH='    . (int) ( $settings['vp_iframe_h']  ?? 1000 ) . ';'
+			. 'window.CF7W_AttachPdf='    . ( $attach_pdf ? 'true' : 'false' ) . ';';
         wp_add_inline_script( 'cf7w-admin', $js );
     }
 
@@ -405,7 +408,7 @@ $vp_placements = $settings['visual_placements'] ?? array();
             // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized,WordPress.Security.ValidatedSanitizedInput.MissingUnslash -- checkbox presence check only, no string value extracted
             'attach_pdf'               => ! empty( $_POST['cf7w_attach_pdf'] ),
 			'add_audit'                => ! empty( $_POST['cf7w_add_audit'] ),
-            'save_pdf'                 => ! empty( $_POST['cf7w_save_pdf'] ),
+            'delete_pdf'               => ! empty( $_POST['cf7w_attach_pdf'] ) && ! empty( $_POST['cf7w_delete_pdf'] ),
             'save_signature'           => ! empty( $_POST['cf7w_save_signature'] ),
             'pdf_filename_scheme'      => sanitize_text_field( wp_unslash( $_POST['cf7w_pdf_filename_scheme'] ?? '' ) ),
             'visual_placement_enabled' => true,

@@ -314,8 +314,10 @@ class CF7W_Submission_Handler {
         $log_id = $wpdb->insert_id;
 		
         // Defaults to true (keep) for backwards-compatibility.
-        $save_pdf       = isset( $settings['save_pdf'] )       ? (bool) $settings['save_pdf']       : true;
         $save_signature = isset( $settings['save_signature'] ) ? (bool) $settings['save_signature'] : true;
+		
+		// Defaults to false (keep) for backwards-compatibility.
+        $delete_pdf       = isset( $settings['delete_pdf'] )       ? (bool) $settings['delete_pdf']       : false;
 
         // ── [PREMIUM] Attach PDF + append audit trail to CF7 email body ────────
         if ( cf7w_fs()->can_use_premium_code__premium_only() ) {
@@ -390,7 +392,7 @@ class CF7W_Submission_Handler {
             cf7w_delete_file( $sig_path );
         }
 
-        if ( ! $save_pdf && $filled_pdf && file_exists( $filled_pdf ) ) {
+        if ( $delete_pdf && $filled_pdf && file_exists( $filled_pdf ) ) {
             // Delete after shutdown so CF7's mailer has already read the file.
             $path_to_delete = $filled_pdf;
             add_action( 'shutdown', function() use ( $path_to_delete ) {

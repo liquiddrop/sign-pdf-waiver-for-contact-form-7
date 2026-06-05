@@ -528,8 +528,62 @@
         window.cf7wLoadPdfIntoViewer = loadPdf;
         return true;
     }
-
+	
 }(jQuery));
+
+// ── Delete PDF ↔ Attach PDF dependency ────────────────────────────────────
+// Mirrors the watchForCanvas() pattern: MutationObserver + setInterval polling
+// because CF7 injects tab panel HTML lazily and the observer alone can miss it.
+( function () {
+	var done = false;
+
+	function tryInitDeletePdfSync() {
+		if ( done ) return;
+
+		var attachChk = document.querySelector( 'input[name="cf7w_attach_pdf"]' );
+		var deleteRow = document.getElementById( 'cf7w-delete-pdf-row' );
+		var deleteChk = document.getElementById( 'cf7w_delete_pdf' );
+
+		if ( ! attachChk || ! deleteRow || ! deleteChk ) return;
+
+		done = true;
+		if ( observer ) observer.disconnect();
+		clearInterval( timer );
+
+		function syncDeletePdf() {
+			if ( attachChk.checked ) {
+				deleteRow.style.opacity       = '';
+				deleteRow.style.pointerEvents = '';
+				deleteChk.disabled            = false;
+			} else {
+				deleteRow.style.opacity       = '0.5';
+				deleteRow.style.pointerEvents = 'none';
+				deleteChk.disabled            = true;
+				deleteChk.checked             = false;
+			}
+		}
+
+		syncDeletePdf();
+		attachChk.addEventListener( 'change', syncDeletePdf );
+	}
+
+	var polls = 0;
+	var timer = setInterval( function () {
+		polls++;
+		tryInitDeletePdfSync();
+		if ( done || polls > 150 ) clearInterval( timer );
+	}, 200 );
+
+	var observer = null;
+	if ( window.MutationObserver ) {
+		observer = new MutationObserver( tryInitDeletePdfSync );
+		observer.observe( document.body, { childList: true, subtree: true } );
+	}
+
+	jQuery( document ).on( 'click.cf7w-delete-pdf', '.wpcf7-editor-tabs a, #wpcf7-admin-form-element .nav-tab', function () {
+		setTimeout( tryInitDeletePdfSync, 50 );
+	} );
+} )();
 
 // ── CF7W PDF embed tag-generator: width radio toggle ─────────────────────────
 // Uses event delegation on document so it fires correctly after CF7 injects

@@ -47,7 +47,8 @@ class CF7W_PDF_Filler {
         if ( ! self::fs()->is_dir( $out_dir ) ) wp_mkdir_p( $out_dir );
 
         $scheme   = $settings['pdf_filename_scheme'] ?? '';
-        $out_name = self::build_filename( $scheme, $pdf_data, $form_id );
+		$cf7_vals = $settings['cf7_field_values'] ?? array();
+        $out_name = self::build_filename( $scheme, $pdf_data, $form_id, $cf7_vals );
         $out_path = $out_dir . $out_name;
 
         $sig = array(
@@ -177,12 +178,20 @@ class CF7W_PDF_Filler {
 	}
 
     // Build output filename from a scheme string with {token} placeholders
-    public static function build_filename( string $scheme, array $pdf_data, int $form_id ): string {
+    public static function build_filename( string $scheme, array $pdf_data, int $form_id, array $cf7_field_values = []  ): string {
         if ( ! $scheme ) return 'waiver_' . $form_id . '_' . time() . '.pdf';
         $name = $scheme;
-        foreach ( $pdf_data as $field => $val ) {
-            $name = str_ireplace( '{' . $field . '}', $val, $name );
-        }
+		
+		foreach ( $cf7_field_values as $field => $val ) {
+			$val = is_array( $val ) ? implode( ', ', $val ) : (string) $val;
+			$name = str_ireplace( '{' . $field . '}', $val, $name );
+		}
+
+		foreach ( $pdf_data as $field => $val ) {
+			$val = is_array( $val ) ? implode( ', ', $val ) : (string) $val;
+			$name = str_ireplace( '{' . $field . '}', $val, $name );
+		}
+
         $name = str_replace( array( '{form_id}', '{date}', '{time}', '{timestamp}' ),
                              array( $form_id, gmdate( 'Y-m-d' ), gmdate( 'His' ), time() ), $name );
         $name = preg_replace( '/\{[^}]+\}/', '', $name );
